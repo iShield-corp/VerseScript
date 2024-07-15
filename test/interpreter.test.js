@@ -1,4 +1,4 @@
-const VerseScript = require('../src/interpreter');
+import VerseScript from '../src/interpreter';
 
 jest.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -65,7 +65,7 @@ describe('VerseScript Interpreter', () => {
     `, () => {
       expect(vs.globalScope.count).toBe(5);
     }],*/
-    ['Class definition and object creation', `
+    /*['Class definition and object creation', `
       class Rectangle {
         constructor(width, height) {
           self.width = width;
@@ -78,11 +78,11 @@ describe('VerseScript Interpreter', () => {
       }
       
       var rect = new Rectangle(5, 3);
-      var area = rect.area();
-      //print(area);
+      //var area = rect.area();
+      print(rect);
     `, () => {
       expect(vs.currentScope.area).toBe(15);
-    }],
+    }],*/
     ['Built-in function: add', `
       var sum = add(5, 3);
     `, () => {

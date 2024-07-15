@@ -1,5 +1,5 @@
-//import parser from "./parser.js";
-const parser = require("./parser.js");
+import parser from "./parser.js";
+//const parser = require("./parser.js");
 class VerseScript {
   constructor(baseUrl = "") {
     this.globalScope = {};
@@ -271,17 +271,17 @@ class VerseScript {
   defineClass(node) {
     const methods = {};
     let constructor = (instance, args) => {};
-
+  
     for (const member of node.members) {
       if (member.type === "methodDefinition") {
-        methods[member.name.name] = this.createMethod(member);
+        methods[member.name.name] = this.createMethod(member, node.name.name);
       }
     }
-
+  
     if (node.constructor) {
-      constructor = this.createConstructor(node.constructor);
+      constructor = this.createConstructor(node.constructor, node.name.name);
     }
-
+  
     let parentClass = null;
     if (node.superClass) {
       parentClass = this.classes[node.superClass.name];
@@ -289,19 +289,29 @@ class VerseScript {
         throw new Error(`Superclass ${node.superClass.name} is not defined`);
       }
     }
-
+  
     this.classes[node.name.name] = {
       methods,
       constructor,
-      parentClass,
+      parentClass
     };
   }
-  createMethod(node) {
-    return (...args) => {
+
+  createMethod(node, className) {
+    return function(instance, ...args) {
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
       this.currentScope = Object.create(this.currentScope);
-      this.currentThis = this.currentScope;
+      this.currentThis = instance;  // Set 'this' to the instance
+  
+      // Add 'super' to the scope
+      const classInfo = this.classes[className];
+      if (classInfo && classInfo.parentClass && classInfo.parentClass.methods[node.name.name]) {
+        this.currentScope.super = (...superArgs) => {
+          return classInfo.parentClass.methods[node.name.name].call(this, instance, ...superArgs);
+        };
+      }
+  
       node.params.forEach((param, index) => {
         this.currentScope[param.name] = args[index];
       });
@@ -311,15 +321,24 @@ class VerseScript {
         this.currentScope = previousScope;
         this.currentThis = previousThis;
       }
-    };
+    }.bind(this);
   }
 
-  createConstructor(node) {
-    return (instance, args) => {
+  createConstructor(node, className) {
+    return function(instance, args) {
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
       this.currentScope = Object.create(this.currentScope);
-      this.currentThis = instance;
+      this.currentThis = instance;  // Set 'this' to the instance being constructed
+  
+      // Add 'super' to the scope
+      const classInfo = this.classes[className];
+      if (classInfo && classInfo.parentClass) {
+        this.currentScope.super = (...superArgs) => {
+          classInfo.parentClass.constructor.call(instance, ...superArgs);
+        };
+      }
+  
       node.params.forEach((param, index) => {
         this.currentScope[param.name] = args[index];
       });
@@ -329,27 +348,37 @@ class VerseScript {
         this.currentScope = previousScope;
         this.currentThis = previousThis;
       }
-    };
+    }.bind(this);
   }
 
-  createObject(node) {
-    if (this.classes[node.className.name]) {
-      const classInfo = this.classes[node.className.name];
-      const instance = Object.create(classInfo.methods);
+createObject(node) {
+  if (this.classes[node.className.name]) {
+    const classInfo = this.classes[node.className.name];
+    const instance = Object.create(null);
+    
+    // Set up the prototype chain
+    let currentClass = classInfo;
+    const prototypeChain = [];
+    while (currentClass) {
+      prototypeChain.unshift(currentClass);
+      currentClass = currentClass.parentClass;
+    }
+    
+    // Attach methods to the instance, overriding as necessary
+    prototypeChain.forEach(cls => {
+      Object.entries(cls.methods).forEach(([name, method]) => {
+        instance[name] = method.bind(this, instance);
+      });
+    });
 
-      // Handle inheritance
-      let currentClass = classInfo;
-      while (currentClass) {
-        Object.setPrototypeOf(instance, Object.create(currentClass.methods));
-        currentClass = currentClass.parentClass;
-      }
+    // Call constructors in order, starting from the topmost superclass
+    const args = node.arguments.map((arg) => this.evaluateNode(arg));
+    prototypeChain.forEach(cls => {
+      cls.constructor.call(this, instance, args);
+    });
 
-      classInfo.constructor(
-        instance,
-        node.arguments.map((arg) => this.evaluateNode(arg)),
-      );
-      return instance;
-    } else if (this.jsClasses[node.className.name]) {
+    return instance;
+  } else if (this.jsClasses[node.className.name]) {
       const JsClass = this.jsClasses[node.className.name];
       const instance = new JsClass(
         ...node.arguments.map((arg) => this.evaluateNode(arg)),
@@ -406,15 +435,12 @@ class VerseScript {
 
   resolveIdentifier(node) {
     if (node.name in this.currentScope) {
-      console.log("currentScope: ", node.name, this.currentScope[node.name]);
       return this.currentScope[node.name];
     }
     if (this.currentThis && node.name in this.currentThis) {
-      console.log("currentThis: ", node.name, this.currentThis[node.name]);
       return this.currentThis[node.name];
     }
     if (node.name in this.globalScope) {
-      console.log("globalScope: ", node.name, this.GlobalScope[node.name]);
       return this.globalScope[node.name];
     }
     if (node.name in this.jsFunctions) {
@@ -429,7 +455,6 @@ class VerseScript {
   evaluateAssignment(node) {
     const value = this.evaluateNode(node.right);
     if (node.left.type === "identifier") {
-      console.log("addition value: ", value, node.left.name);
       this.currentScope[node.left.name] = value;
     } else if (node.left.type === "memberExpression") {
       const obj = this.evaluateNode(node.left.object);
@@ -578,9 +603,6 @@ class VerseScript {
   }
 
   defineMacro(node) {
-    console.log(`Defining macro: ${node.name.name}`);
-    console.log(`Params: ${JSON.stringify(node.params)}`);
-    console.log(`Body: ${node.body}`);
     this.macros[node.name.name] = {
       params: node.params,
       body: node.body.trim(),
@@ -588,8 +610,6 @@ class VerseScript {
   }
 
   expandMacro(node) {
-    console.log(`Expanding macro: ${node.name.name}`);
-    console.log(`Arguments: ${JSON.stringify(node.arguments)}`);
     const macro = this.macros[node.name.name];
     if (!macro) {
       throw new Error(`Unknown macro: ${node.name.name}`);
@@ -602,13 +622,11 @@ class VerseScript {
       expandedBody = expandedBody.replace(regex, JSON.stringify(argValue));
     });
 
-    console.log(`Expanded body: ${expandedBody}`);
 
     try {
       const expandedAst = parser.parse(expandedBody, {
         startRule: "expression",
       });
-      console.log(`Parsed AST: ${JSON.stringify(expandedAst)}`);
       return this.evaluateNode(expandedAst);
     } catch (error) {
       console.error(`Error parsing expanded macro: ${error}`);
@@ -616,5 +634,5 @@ class VerseScript {
     }
   }
 }
-//export default VerseScript;
-module.exports = VerseScript;
+export default VerseScript;
+//module.exports = VerseScript;
