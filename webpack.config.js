@@ -5,7 +5,7 @@ module.exports = {
   output: {
     filename: 'verseScript.min.js',
     path: path.resolve(__dirname, 'dist'),
-    library: 'VerseScript',
+    library: 'Verse',
     libraryTarget: 'umd',
     sourceMapFilename: '[file].map',
   },

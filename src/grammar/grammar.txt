@@ -1,5 +1,14 @@
+{
+  var locationInfo = function(location, type, node) {
+    node.loc = location;
+    return node;
+  }
+}
+
 start
-  = _ program:moduleItem* _ { return program; }
+  = _ program:moduleItem* _ {
+    return locationInfo(location(), "Program", { type: "Program", body: program });
+  }
 
 moduleItem
   = importDeclaration
@@ -8,29 +17,30 @@ moduleItem
 
 importDeclaration
   = "import" __ "{" _ importSpecifiers:importSpecifier* _ "}" __ "from" __ source:string _ ";" _ {
-      return { type: "importDeclaration", specifiers: importSpecifiers, source };
+      return locationInfo(location(), "ImportDeclaration", { type: "importDeclaration", specifiers: importSpecifiers, source });
     }
 
 importSpecifier
   = name:identifier __ ("as" __ alias:identifier)? {
-      return { type: "importSpecifier", name, alias: alias || name };
+      return locationInfo(location(), "ImportSpecifier", { type: "importSpecifier", name, alias: alias || name });
     }
 
 exportDeclaration
   = "export" __ declaration:(variableDeclaration / functionDefinition / classDefinition) {
-      return { type: "exportDeclaration", declaration };
+      return locationInfo(location(), "ExportDeclaration", { type: "exportDeclaration", declaration });
     }
   / "export" __ "{" _ exportSpecifiers:exportSpecifier* _ "}" _ ";" _ {
-      return { type: "exportDeclaration", specifiers: exportSpecifiers };
+      return locationInfo(location(), "ExportDeclaration", { type: "exportDeclaration", specifiers: exportSpecifiers });
     }
 
 exportSpecifier
   = name:identifier __ ("as" __ alias:identifier)? {
-      return { type: "exportSpecifier", name, alias: alias || name };
+      return locationInfo(location(), "ExportSpecifier", { type: "exportSpecifier", name, alias: alias || name });
     }
 
 statement
-  = variableDeclaration
+  = macroDefinition
+  / variableDeclaration
   / expressionStatement
   / ifStatement
   / forLoop
@@ -38,18 +48,27 @@ statement
   / returnStatement
   / functionDefinition
   / classDefinition
-  / macroDefinition
+  / macroExpansionStatement
+
+macroExpansionStatement
+  = expansion:macroExpansion _ ";" _ {
+      return locationInfo(location(), "ExpressionStatement", { type: "expressionStatement", expression: expansion });
+    }
 
 expressionStatement
-  = expr:expression _ ";" _ { return expr; }
+  = expr:expression _ ";" _ { 
+      return locationInfo(location(), "ExpressionStatement", { 
+        type: "expressionStatement", 
+        expression: expr 
+      }); 
+    }
 
 expression
-  = assignment
-  / logicalOr
+  = _ expr:(assignment / logicalOr / comparison / macroExpansion) _ { return expr; }
 
 assignment
   = left:leftHandSide _ "=" _ right:expression {
-      return { type: "assignment", left, right };
+      return locationInfo(location(), "Assignment", { type: "assignment", left, right });
     }
 
 leftHandSide
@@ -58,87 +77,107 @@ leftHandSide
 
 logicalOr
   = head:logicalAnd tail:(_ "||" _ logicalAnd)* {
-      return tail.reduce((result, [, , , right]) => ({
-        type: "logicalOr",
-        left: result,
-        right: right
-      }), head);
+      return tail.reduce((result, element) => 
+        locationInfo(location(), "LogicalOr", {
+          type: "logicalOr",
+          left: result,
+          right: element[3]
+        }), head);
     }
 
 logicalAnd
-  = head:equality tail:(_ "&&" _ equality)* {
-      return tail.reduce((result, [, , , right]) => ({
-        type: "logicalAnd",
-        left: result,
-        right: right
-      }), head);
-    }
-
-equality
-  = head:comparison tail:(_ ("==" / "!=") _ comparison)* {
-      return tail.reduce((result, [, op, , right]) => ({
-        type: "equality",
-        operator: op,
-        left: result,
-        right: right
-      }), head);
+  = head:comparison tail:(_ "&&" _ comparison)* {
+      return tail.reduce((result, element) => 
+        locationInfo(location(), "LogicalAnd", {
+          type: "logicalAnd",
+          left: result,
+          right: element[3]
+        }), head);
     }
 
 comparison
-  = head:addition tail:(_ ("<" / "<=" / ">" / ">=") _ addition)* {
-      return tail.reduce((result, [, op, , right]) => ({
-        type: "comparison",
-        operator: op,
-        left: result,
-        right: right
-      }), head);
+  = head:addition tail:(_ ("<=" / ">=" / "==" / "!=" / "<" / ">") _ addition)* {
+      return tail.reduce((result, element) => 
+        locationInfo(location(), "Comparison", {
+          type: "comparison",
+          operator: element[1],
+          left: result,
+          right: element[3]
+        }), head);
     }
 
 addition
   = head:multiplication tail:(_ ("+" / "-") _ multiplication)* {
-      return tail.reduce((result, [, op, , right]) => ({
-        type: "addition",
-        operator: op,
-        left: result,
-        right: right
-      }), head);
+      return tail.reduce((result, element) => 
+        locationInfo(location(), "Addition", {
+          type: "addition",
+          operator: element[1],
+          left: result,
+          right: element[3]
+        }), head);
     }
 
 multiplication
   = head:unary tail:(_ ("*" / "/" / "%") _ unary)* {
-      return tail.reduce((result, [, op, , right]) => ({
-        type: "multiplication",
-        operator: op,
-        left: result,
-        right: right
-      }), head);
+      return tail.reduce((result, element) => 
+        locationInfo(location(), "Multiplication", {
+          type: "multiplication",
+          operator: element[1],
+          left: result,
+          right: element[3]
+        }), head);
     }
 
 unary
   = operator:("-" / "!" / "typeof") _ right:unary {
-      return { type: "unary", operator, right };
+      return locationInfo(location(), "Unary", { type: "unary", operator, right });
     }
   / callExpression
 
 callExpression
   = head:primaryExpression tail:(_ ("(" _ argumentList _ ")" / "[" _ expression _ "]" / "." _ identifier))* {
-      return tail.reduce((result, [, expr]) => {
-        if (expr[0] === "(") {
-          return { type: "functionCall", callee: result, arguments: expr[2] };
-        } else if (expr[0] === "[") {
-          return { type: "memberExpression", object: result, property: expr[2], computed: true };
+      return tail.reduce((result, element) => {
+        if (element[1][0] === "(") {
+          return locationInfo(location(), "FunctionCall", { type: "functionCall", callee: result, arguments: element[1][2] });
+        } else if (element[1][0] === "[") {
+          return locationInfo(location(), "MemberExpression", { type: "memberExpression", object: result, property: element[1][2], computed: true });
         } else {
-          return { type: "memberExpression", object: result, property: expr[2], computed: false };
+          return locationInfo(location(), "MemberExpression", { type: "memberExpression", object: result, property: element[1][2], computed: false });
         }
       }, head);
     }
 
 memberExpression
-  = callExpression
+  = head:(
+      "self" { return locationInfo(location(), "Self", { type: "self" }); }
+    / primaryExpression
+    )
+    tail:("." identifier / "[" _ expression _ "]")* {
+      return tail.reduce((result, element) => {
+        if (element[0] === ".") {
+          return locationInfo(location(), "MemberExpression", {
+            type: "memberExpression",
+            object: result,
+            property: element[1],
+            computed: false
+          });
+        } else {
+          return locationInfo(location(), "MemberExpression", {
+            type: "memberExpression",
+            object: result,
+            property: element[2],
+            computed: true
+          });
+        }
+      }, head);
+    }
 
 primaryExpression
   = literal
+  / arrayLiteral
   / objectCreation
+  / macroExpansion
+  / "self" { return locationInfo(location(), "Self", { type: "self" }); }
   / identifier
   / parenthesizedExpression
 
@@ -147,46 +186,61 @@ parenthesizedExpression
 
 objectCreation
   = "new" __ className:identifier _ "(" _ args:argumentList _ ")" {
-      return { type: "objectCreation", className, arguments: args };
+      return locationInfo(location(), "ObjectCreation", { type: "objectCreation", className, arguments: args });
+    }
+
+arrayLiteral
+  = "[" _ elements:arrayElements? _ "]" {
+      return locationInfo(location(), "ArrayLiteral", { type: "arrayLiteral", elements: elements || [] });
+    }
+
+arrayElements
+  = head:expression tail:(_ "," _ expression)* {
+      return [head, ...tail.map(element => element[3])];
     }
 
 identifier
   = !keyword name:[a-zA-Z_][a-zA-Z0-9_]* {
-      return { type: "identifier", name: text() };
+      return locationInfo(location(), "Identifier", { type: "identifier", name: text() });
     }
 
 keyword
-  = ("function" / "class" / "extends" / "constructor" / "var" / "let" / "const" / "if" / "else" / "for" / "while" / "return" / "true" / "false" / "null" / "new" / "macro" / "import" / "export" / "from" / "as") !identifierPart
+  = ("function" / "class" / "extends" / "constructor" / "var" / "let" / "const" / "if" / "else" / "for" / "while" / "return" / "true" / "false" / "null" / "new" / "macro" / "import" / "export" / "from" / "as" / "self") !identifierPart
 
 literal
   = number
   / string
   / boolean
   / char
+  / arrayLiteral
 
 number
   = float
   / integer
 
 integer
-  = digits:[0-9]+ { return { type: "integer", value: parseInt(digits.join(""), 10) }; }
+  = digits:[0-9]+ { 
+      return locationInfo(location(), "Integer", { type: "integer", value: parseInt(digits.join(""), 10) }); 
+    }
 
 float
   = digits:[0-9]+ "." fractional:[0-9]+ {
-      return { type: "float", value: parseFloat(digits.join("") + "." + fractional.join("")) };
+      return locationInfo(location(), "Float", { type: "float", value: parseFloat(digits.join("") + "." + fractional.join("")) });
     }
 
 string
   = '"' chars:([^"\\] / EscapeSequence)* '"' {
-      return { type: "string", value: chars.join("") };
+      return locationInfo(location(), "String", { type: "string", value: chars.join("") });
     }
 
 boolean
-  = ("true" / "false") { return { type: "boolean", value: text() === "true" }; }
+  = ("true" / "false") { 
+      return locationInfo(location(), "Boolean", { type: "boolean", value: text() === "true" }); 
+    }
 
 char
   = "'" char:([^'\\] / EscapeSequence) "'" {
-      return { type: "char", value: char };
+      return locationInfo(location(), "Char", { type: "char", value: char });
     }
 
 EscapeSequence
@@ -200,84 +254,116 @@ UnicodeEscape
 argumentList
   = head:expression? tail:(_ "," _ expression)* {
       const args = head ? [head] : [];
-      return args.concat(tail.map(t => t[3]));
+      return args.concat(tail.map(element => element[3]));
     }
 
 variableDeclaration
-  = kind:("var" / "let" / "const") __ id:identifier _ "=" _ init:expression _ ";" _ {
-      return { type: "variableDeclaration", kind, id, init };
+  = kind:("var" / "let" / "const") __ id:identifier _ initialization:("=" _ expression)? _ ";" _ {
+      return locationInfo(location(), "VariableDeclaration", { 
+        type: "variableDeclaration", 
+        kind, 
+        id, 
+        init: initialization ? initialization[2] : null 
+      });
     }
 
 ifStatement
-  = "if" _ "(" _ test:expression _ ")" _ consequent:block _ ("else" _ alternate:block)? {
-      return { type: "ifStatement", test, consequent, alternate };
+  = "if" _ "(" _ test:expression _ ")" _ consequent:block _
+    else_clause:("else" _ (ifStatement / block))? {
+      return locationInfo(location(), "IfStatement", {
+        type: "ifStatement",
+        test: test,
+        consequent: consequent,
+        alternate: else_clause ? else_clause[2] : null
+      });
     }
 
 forLoop
-  = "for" _ "(" _ init:(variableDeclaration / expressionStatement)? _ ";" _ test:expression? _ ";" _ update:expression? _ ")" _ body:block {
-      return { type: "forLoop", init, test, update, body };
+  = "for" _ "(" _ 
+    init:(forInit)? _ ";" _ 
+    test:expression? _ ";" _ 
+    update:expression? _
+    ")" _ body:block {
+      return locationInfo(location(), "ForLoop", { 
+        type: "forLoop", 
+        init: init || null, 
+        test: test || null, 
+        update: update || null, 
+        body 
+      });
     }
+
+forInit
+  = variableDeclaration
+  / expression
 
 whileLoop
   = "while" _ "(" _ test:expression _ ")" _ body:block {
-      return { type: "whileLoop", test, body };
+      return locationInfo(location(), "WhileLoop", { type: "whileLoop", test, body });
     }
 
 returnStatement
   = "return" __ value:expression? _ ";" _ {
-      return { type: "returnStatement", value };
+      return locationInfo(location(), "ReturnStatement", { type: "returnStatement", value });
     }
 
 block
-  = "{" _ statements:statement* "}" _ { return statements; }
+  = "{" _ statements:statement* _ "}" _ { return statements; }
 
 functionDefinition
   = "function" __ name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
-      return { type: "functionDefinition", name, params, body };
+      return locationInfo(location(), "FunctionDefinition", { type: "functionDefinition", name, params, body });
     }
 
 classDefinition
-  = "class" __ name:identifier __ ("extends" __ superClass:identifier __)? "{" _ 
+  = "class" __ name:identifier __ 
+    extendsClause:("extends" __ identifier __)? 
+    "{" _ 
     constructor:constructorDefinition?
     members:(methodDefinition / propertyDefinition)*
-    "}" _ {
-      return { 
+    _ "}" _ {
+      return locationInfo(location(), "ClassDefinition", { 
         type: "classDefinition", 
         name, 
-        superClass, 
+        superClass: extendsClause ? extendsClause[2] : null,
         constructor: constructor || { type: "constructorDefinition", params: [], body: [] },
         members 
-      };
+      });
     }
 
 constructorDefinition
   = "constructor" _ "(" _ params:parameterList _ ")" _ body:block {
-      return { type: "constructorDefinition", params, body };
+      return locationInfo(location(), "ConstructorDefinition", { type: "constructorDefinition", params, body });
     }
 
 methodDefinition
   = name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
-      return { type: "methodDefinition", name, params, body };
+      return locationInfo(location(), "MethodDefinition", { type: "methodDefinition", name, params, body });
     }
 
 propertyDefinition
   = name:identifier _ ("=" _ value:expression)? _ ";" _ {
-      return { type: "propertyDefinition", name, value };
+      return locationInfo(location(), "PropertyDefinition", { type: "propertyDefinition", name, value });
     }
 
 parameterList
   = head:identifier? tail:(_ "," _ identifier)* {
       const params = head ? [head] : [];
-      return params.concat(tail.map(t => t[3]));
+      return params.concat(tail.map(element => element[3]));
     }
 
 macroDefinition
-  = "macro" __ name:identifier _ "(" _ params:parameterList _ ")" _ "{" _ body:macroBody _ "}" _ {
-      return { type: "macroDefinition", name, params, body };
+  = "macro" __ name:identifier _ "(" _ params:parameterList _ ")" _ "{" _ body:macroBody _ "}" _ ";"? _ {
+      return locationInfo(location(), "MacroDefinition", { type: "macroDefinition", name, params, body });
+    }
+
+macroExpansion
+  = "#" name:identifier _ "(" _ args:argumentList? _ ")" {
+      return locationInfo(location(), "MacroExpansion", { type: "macroExpansion", name, arguments: args || [] });
     }
 
 macroBody
-  = chars:[^}]* { return chars.join(""); }
+  = chars:[^}]* { return chars.join("").trim(); }
 
 identifierPart
   = [a-zA-Z0-9_]

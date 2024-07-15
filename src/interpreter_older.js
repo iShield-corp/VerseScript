@@ -1,5 +1,5 @@
-//import parser from "./parser.js";
 const parser = require("./parser.js");
+
 class VerseScript {
   constructor(baseUrl = "") {
     this.globalScope = {};
@@ -76,7 +76,7 @@ class VerseScript {
       if (this.modules.has(filename)) {
         return this.modules.get(filename).exports;
       }
-      content = ""; // await this.fetchModuleContent(filename);
+      content = "";
     } else {
       content = input;
       filename = "inline-script";
@@ -91,23 +91,9 @@ class VerseScript {
     this.modules.set(filename, module);
     this.currentModule = module;
 
-    try {
-      const ast = parser.parse(content);
-      for (const node of ast.body) {
-        this.evaluateNode(node);
-      }
-    } catch (error) {
-      if (error.location) {
-        const lines = content.split("\n");
-        const line = lines[error.location.start.line - 1];
-        const pointer = " ".repeat(error.location.start.column - 1) + "^";
-
-        throw new Error(
-          `${error.message}\nAt ${filename}:${error.location.start.line}:${error.location.start.column}\n${line}\n${pointer}`,
-        );
-      } else {
-        throw error;
-      }
+    const ast = parser.parse(content);
+    for (const node of ast) {
+      this.evaluateNode(node);
     }
 
     module.loaded = true;
@@ -170,101 +156,80 @@ class VerseScript {
   }
 
   evaluateNode(node) {
-    try {
-      switch (node.type) {
-        case "classDefinition":
-          this.defineClass(node);
-          break;
-        case "variableDeclaration":
-          const value = node.init ? this.evaluateNode(node.init) : undefined;
-          this.currentScope[node.id.name] = value;
-          break;
-        case "macroExpansion":
-          return this.expandMacro(node);
-        case "functionDefinition":
-          this.currentScope[node.name.name] = this.createFunction(node);
-          break;
-        case "ifStatement":
-          if (this.evaluateNode(node.test)) {
-            this.evaluateBlock(node.consequent);
-          } else if (node.alternate) {
-            this.evaluateBlock(node.alternate);
-          }
-          break;
-        case "forLoop":
-          this.evaluateForLoop(node);
-          break;
-        case "whileLoop":
-          while (this.evaluateNode(node.test)) {
-            //console.log(node.test);
-            //console.log('Current Scope: ', this.currentScope);
-            //console.log('Global Scope: ', this.globalScope);
-            //console.log('Current This: ', this.currentThis);
-            this.evaluateBlock(node.body);
-          }
-          break;
-        case "returnStatement":
-          this.returnValue = node.value
-            ? this.evaluateNode(node.value)
-            : undefined;
-          throw { type: "return", value: this.returnValue };
-        case "assignment":
-          return this.evaluateAssignment(node);
-        case "objectCreation":
-          return this.createObject(node);
-        case "functionCall":
-          return this.callFunction(node);
-        case "self":
-          if (!this.currentThis) {
-            throw new Error("'self' used outside of a class method");
-          }
-          return this.currentThis;
-        case "memberExpression":
-          return this.evaluateMemberExpression(node);
-        case "identifier":
-          return this.resolveIdentifier(node);
-        case "integer":
-        case "float":
-        case "string":
-        case "boolean":
-        case "char":
-          return node.value;
-        case "logicalOr":
-          return this.evaluateNode(node.left) || this.evaluateNode(node.right);
-        case "logicalAnd":
-          return this.evaluateNode(node.left) && this.evaluateNode(node.right);
-        case "equality":
-          return this.evaluateEquality(node);
-        case "comparison":
-          return this.evaluateComparison(node);
-        case "addition":
-        case "multiplication":
-          return this.evaluateBinaryOperation(node);
-        case "unary":
-          return this.evaluateUnaryOperation(node);
-        case "macroDefinition":
-          this.defineMacro(node);
-          break;
-        case "macroExpansion":
-          return this.expandMacro(node);
-        case "importDeclaration":
-          this.evaluateImport(node);
-          break;
-        case "exportDeclaration":
-          this.evaluateExport(node);
-          break;
-        case "arrayLiteral":
-          return node.elements.map(element => this.evaluateNode(element));
-        case "expressionStatement":
-          return this.evaluateNode(node.expression);
-        default:
-          throw new Error(`Unknown node type: ${node.type}`);
-      }
-    } catch (error) {
-      if (node.loc) {
-        error.message = `${error.message}\nAt ${this.currentModule.filename}:${node.loc.start.line}:${node.loc.start.column}`;
-      }
-      throw error;
+    switch (node.type) {
+      case "classDefinition":
+        this.defineClass(node);
+        break;
+      case "variableDeclaration":
+        this.currentScope[node.id.name] = node.init
+          ? this.evaluateNode(node.init)
+          : undefined;
+        break;
+      case "functionDefinition":
+        this.currentScope[node.name.name] = this.createFunction(node);
+        break;
+      case "ifStatement":
+        if (this.evaluateNode(node.test)) {
+          this.evaluateBlock(node.consequent);
+        } else if (node.alternate) {
+          this.evaluateBlock(node.alternate);
+        }
+        break;
+      case "forLoop":
+        this.evaluateForLoop(node);
+        break;
+      case "whileLoop":
+        while (this.evaluateNode(node.test)) {
+          this.evaluateBlock(node.body);
+        }
+        break;
+      case "returnStatement":
+        throw {
+          type: "return",
+          value: node.value ? this.evaluateNode(node.value) : undefined,
+        };
+      case "assignment":
+        return this.evaluateAssignment(node);
+      case "objectCreation":
+        return this.createObject(node);
+      case "functionCall":
+        return this.callFunction(node);
+      case "memberExpression":
+        return this.evaluateMemberExpression(node);
+      case "identifier":
+        return this.resolveIdentifier(node.name);
+      case "integer":
+      case "float":
+      case "string":
+      case "boolean":
+      case "char":
+        return node.value;
+      case "logicalOr":
+        return this.evaluateNode(node.left) || this.evaluateNode(node.right);
+      case "logicalAnd":
+        return this.evaluateNode(node.left) && this.evaluateNode(node.right);
+      case "equality":
+        return this.evaluateEquality(node);
+      case "comparison":
+        return this.evaluateComparison(node);
+      case "addition":
+      case "multiplication":
+        return this.evaluateBinaryOperation(node);
+      case "unary":
+        return this.evaluateUnaryOperation(node);
+      case "macroDefinition":
+        this.defineMacro(node);
+        break;
+      case "macroExpansion":
+        return this.expandMacro(node);
+      case "importDeclaration":
+        this.evaluateImport(node);
+        break;
+      case "exportDeclaration":
+        this.evaluateExport(node);
+        break;
+      default:
+        throw new Error(`Unknown node type: ${node.type}`);
     }
   }
 
@@ -282,26 +247,14 @@ class VerseScript {
       constructor = this.createConstructor(node.constructor);
     }
 
-    let parentClass = null;
-    if (node.superClass) {
-      parentClass = this.classes[node.superClass.name];
-      if (!parentClass) {
-        throw new Error(`Superclass ${node.superClass.name} is not defined`);
-      }
-    }
-
-    this.classes[node.name.name] = {
-      methods,
-      constructor,
-      parentClass,
-    };
+    this.classes[node.name.name] = { methods, constructor };
   }
+
   createMethod(node) {
     return (...args) => {
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
       this.currentScope = Object.create(this.currentScope);
-      this.currentThis = this.currentScope;
       node.params.forEach((param, index) => {
         this.currentScope[param.name] = args[index];
       });
@@ -336,14 +289,6 @@ class VerseScript {
     if (this.classes[node.className.name]) {
       const classInfo = this.classes[node.className.name];
       const instance = Object.create(classInfo.methods);
-
-      // Handle inheritance
-      let currentClass = classInfo;
-      while (currentClass) {
-        Object.setPrototypeOf(instance, Object.create(currentClass.methods));
-        currentClass = currentClass.parentClass;
-      }
-
       classInfo.constructor(
         instance,
         node.arguments.map((arg) => this.evaluateNode(arg)),
@@ -356,7 +301,6 @@ class VerseScript {
       );
       return instance;
     } else {
-      console.error("Class not found:", node.className.name);
       throw new Error(`Unknown class: ${node.className.name}`);
     }
   }
@@ -364,7 +308,7 @@ class VerseScript {
   callFunction(node) {
     let func;
     let thisArg = null;
-  
+
     if (node.callee.type === "memberExpression") {
       const obj = this.evaluateNode(node.callee.object);
       const prop = node.callee.property.name;
@@ -373,29 +317,17 @@ class VerseScript {
     } else {
       func = this.evaluateNode(node.callee);
     }
-  
+
     if (typeof func !== "function") {
       throw new Error(`${node.callee.name || "Expression"} is not a function`);
     }
-  
-    const args = node.arguments.map(arg => this.evaluateNode(arg));
-    const previousThis = this.currentThis;
-    this.currentThis = thisArg;
-    try {
-      return func.apply(thisArg, args);
-    } finally {
-      this.currentThis = previousThis;
-    }
+
+    const args = node.arguments.map((arg) => this.evaluateNode(arg));
+    return func.apply(thisArg, args);
   }
 
   evaluateMemberExpression(node) {
-    let obj;
-    if (node.object.type === "self") {
-      obj = this.currentThis;
-    } else {
-      obj = this.evaluateNode(node.object);
-    }
-    
+    const obj = this.evaluateNode(node.object);
     if (node.computed) {
       const prop = this.evaluateNode(node.property);
       return obj[prop];
@@ -404,32 +336,34 @@ class VerseScript {
     }
   }
 
-  resolveIdentifier(node) {
-    if (node.name in this.currentScope) {
-      console.log("currentScope: ", node.name, this.currentScope[node.name]);
-      return this.currentScope[node.name];
+  resolveIdentifier(name) {
+    let scope = this.currentScope;
+    while (scope) {
+      if (name in scope) {
+        return scope[name];
+      }
+      scope = Object.getPrototypeOf(scope);
     }
-    if (this.currentThis && node.name in this.currentThis) {
-      console.log("currentThis: ", node.name, this.currentThis[node.name]);
-      return this.currentThis[node.name];
+    if (name in this.jsFunctions) {
+      return this.jsFunctions[name];
     }
-    if (node.name in this.globalScope) {
-      console.log("globalScope: ", node.name, this.GlobalScope[node.name]);
-      return this.globalScope[node.name];
+    if (name in this.jsClasses) {
+      return this.jsClasses[name];
     }
-    if (node.name in this.jsFunctions) {
-      return this.jsFunctions[node.name];
-    }
-    if (node.name in this.jsClasses) {
-      return this.jsClasses[node.name];
-    }
-    throw new Error(`Undefined variable: ${node.name}`);
+    throw new Error(`Undefined variable: ${name}`);
   }
 
   evaluateAssignment(node) {
     const value = this.evaluateNode(node.right);
     if (node.left.type === "identifier") {
-      console.log("addition value: ", value, node.left.name);
+      let scope = this.currentScope;
+      while (scope) {
+        if (node.left.name in scope) {
+          scope[node.left.name] = value;
+          return value;
+        }
+        scope = Object.getPrototypeOf(scope);
+      }
       this.currentScope[node.left.name] = value;
     } else if (node.left.type === "memberExpression") {
       const obj = this.evaluateNode(node.left.object);
@@ -444,44 +378,35 @@ class VerseScript {
   }
 
   evaluateBlock(block) {
-    //const previousScope = this.currentScope;
-    //this.currentScope = Object.create(this.currentScope);
+    const previousScope = this.currentScope;
+    this.currentScope = Object.create(this.currentScope);
     try {
+      let result;
       for (const statement of block) {
-        this.evaluateNode(statement);
+        result = this.evaluateNode(statement);
       }
+      return result;
+    } catch (e) {
+      if (e.type === "return") return e.value;
+      throw e;
     } finally {
-      //this.currentScope = previousScope;
+      this.currentScope = previousScope;
     }
   }
 
   evaluateForLoop(node) {
-    //const previousScope = this.currentScope;
-    //this.currentScope = Object.create(this.currentScope);
-
+    const previousScope = this.currentScope;
+    this.currentScope = Object.create(this.currentScope);
     try {
-      // Initialize
-      if (node.init) {
-        this.evaluateNode(node.init);
-      }
-
-      // Test and loop
-      while (true) {
-        // Check the test condition if it exists
-        if (node.test && !this.evaluateNode(node.test)) {
-          break;
-        }
-
-        // Execute the loop body
+      for (
+        node.init ? this.evaluateNode(node.init) : null;
+        node.test ? this.evaluateNode(node.test) : true;
+        node.update ? this.evaluateNode(node.update) : null
+      ) {
         this.evaluateBlock(node.body);
-
-        // Perform the update
-        if (node.update) {
-          this.evaluateNode(node.update);
-        }
       }
     } finally {
-      //this.currentScope = previousScope;
+      this.currentScope = previousScope;
     }
   }
 
@@ -493,16 +418,10 @@ class VerseScript {
         this.currentScope[param.name] = args[index];
       });
       try {
-        this.evaluateBlock(node.body);
-      } catch (e) {
-        if (e.type === "return") {
-          return e.value;
-        }
-        throw e;
+        return this.evaluateBlock(node.body);
       } finally {
         this.currentScope = previousScope;
       }
-      return undefined;
     };
   }
 
@@ -516,22 +435,6 @@ class VerseScript {
         return left != right;
     }
   }
-
-  /*expandMacro(node) {
-    const macro = this.macros[node.name.name];
-    if (!macro) {
-      throw new Error(`Unknown macro: ${node.name.name}`);
-    }
-  
-    let expandedBody = macro.body;
-    macro.params.forEach((param, index) => {
-      const argValue = this.evaluateNode(node.arguments[index]);
-      const regex = new RegExp(`\\b${param.name}\\b`, "g");
-      expandedBody = expandedBody.replace(regex, JSON.stringify(argValue));
-    });
-  
-    return this.evaluateNode(parser.parse(expandedBody)[0]);
-  }*/
 
   evaluateComparison(node) {
     const left = this.evaluateNode(node.left);
@@ -578,18 +481,10 @@ class VerseScript {
   }
 
   defineMacro(node) {
-    console.log(`Defining macro: ${node.name.name}`);
-    console.log(`Params: ${JSON.stringify(node.params)}`);
-    console.log(`Body: ${node.body}`);
-    this.macros[node.name.name] = {
-      params: node.params,
-      body: node.body.trim(),
-    };
+    this.macros[node.name.name] = { params: node.params, body: node.body };
   }
 
   expandMacro(node) {
-    console.log(`Expanding macro: ${node.name.name}`);
-    console.log(`Arguments: ${JSON.stringify(node.arguments)}`);
     const macro = this.macros[node.name.name];
     if (!macro) {
       throw new Error(`Unknown macro: ${node.name.name}`);
@@ -602,19 +497,8 @@ class VerseScript {
       expandedBody = expandedBody.replace(regex, JSON.stringify(argValue));
     });
 
-    console.log(`Expanded body: ${expandedBody}`);
-
-    try {
-      const expandedAst = parser.parse(expandedBody, {
-        startRule: "expression",
-      });
-      console.log(`Parsed AST: ${JSON.stringify(expandedAst)}`);
-      return this.evaluateNode(expandedAst);
-    } catch (error) {
-      console.error(`Error parsing expanded macro: ${error}`);
-      throw error;
-    }
+    return this.evaluateNode(parser.parse(expandedBody)[0]);
   }
 }
-//export default VerseScript;
+
 module.exports = VerseScript;

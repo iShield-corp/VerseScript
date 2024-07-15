@@ -1,5 +1,5 @@
-import VerseScript from "./interpreter";
+//import VerseScript from "./interpreter";
+const VerseScript = require("./interpreter");
 
-export {
-    VerseScript
-}
+module.exports = VerseScript;
+//export {VerseScript}
