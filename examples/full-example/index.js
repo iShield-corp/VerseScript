@@ -16,7 +16,7 @@ let script = `
       
       var rect = new Rectangle(5, 3);
       var area = rect.area();
-      print(rect);
+      //print(rect);
 `
 
 interpreter.interpret(script);
