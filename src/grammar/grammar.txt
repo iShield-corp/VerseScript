@@ -290,7 +290,7 @@ __
 
 comment
   = singleLineComment
-  / multiLineComment6
+  / multiLineComment
 
 singleLineComment
   = "//" [^\n]*
