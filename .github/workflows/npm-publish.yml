@@ -1,37 +1,42 @@
-name: Node.js Package
+name: VerseScript CI/CD
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   release:
     types: [created]
-    
+
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v3
+      - name: Use Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: 16
+          node-version: '16'
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - run: npm run docs
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v2
         with:
           name: dist
           path: dist
 
   publish-npm:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: build-and-test
     if: github.event_name == 'release' && github.event.action == 'created'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v3
+      - name: Use Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: 16
-          registry-url: https://registry.npmjs.org/
+          node-version: '16'
+          registry-url: 'https://registry.npmjs.org'
       - run: npm ci
       - name: Download build artifacts
         uses: actions/download-artifact@v2
@@ -41,3 +46,25 @@ jobs:
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
+
+  auto-version-bump:
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Use Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      - name: Git config
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+      - name: Bump version
+        run: |
+          npm version patch -m "Bump version to %s [skip ci]"
+          git push
+          git push --tags
