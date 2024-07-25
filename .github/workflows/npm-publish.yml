@@ -13,13 +13,9 @@ jobs:
         with:
           node-version: 16
       - run: npm ci
-      - name: Compile grammar
-        run: npm run compile:grammar
-      - name: Build
-        run: npm run build
       - run: npm test
-      - name: Generate documentation
-        run: npm run docs
+      - run: npm run build
+      - run: npm run docs
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
         with:
@@ -36,13 +32,12 @@ jobs:
         with:
           node-version: 16
           registry-url: https://registry.npmjs.org/
+      - run: npm ci
       - name: Download build artifacts
         uses: actions/download-artifact@v2
         with:
           name: dist
           path: dist
-      - run: npm ci
-      - run: npm run build
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
