@@ -4,18 +4,24 @@ jest.spyOn(console, 'log').mockImplementation(() => {});
 
 describe('VerseScript Interpreter', () => {
   let vs;
+  let consoleSpy;
 
   beforeAll(() => {
     console.log.mockRestore();
     console.log('Starting VerseScript Interpreter tests');
+    consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
   });
 
   beforeEach(() => {
     vs = new VerseScript();
+    consoleSpy.mockClear();
+
   });
 
   afterAll(() => {
     console.log('Finished VerseScript Interpreter tests');
+    consoleSpy.mockRestore();
   });
 
   const testCases = [
@@ -65,24 +71,70 @@ describe('VerseScript Interpreter', () => {
     `, () => {
       expect(vs.globalScope.count).toBe(5);
     }],*/
-    /*['Class definition and object creation', `
-      class Rectangle {
-        constructor(width, height) {
-          self.width = width;
-          self.height = height;
+    ['Class definition, inheritance, and object creation', `
+      try {
+        class Shape {
+          constructor(name) {
+            self.name = name;
+            print("Shape constructor called with name: " + name);
+          }
+          
+          describe() {
+            print("Shape describe method called");
+            return "This is a " + self.name;
+          }
+        }
+    
+        class Rectangle extends Shape {
+          constructor(width, height) {
+            print("Rectangle constructor called with width: " + width + ", height: " + height);
+            super("rectangle");
+            self.width = width;
+            self.height = height;
+          }
+          
+          area() {
+            print("Rectangle area method called");
+            return self.width * self.height;
+          }
+    
+          describe() {
+            print("Rectangle describe method called");
+            return super.describe() + " with area " + self.area();
+          }
         }
         
-        area() {
-          return self.width * self.height;
-        }
+        print("Creating Rectangle instance");
+        var rect = new Rectangle(5, 3);
+        print("Calling describe method");
+        var description = rect.describe();
+        print("Calling area method");
+        var area = rect.area();
+        print("Final description: " + description);
+        print("Final area: " + area);
+      } catch (error) {
+        print("Error occurred: " + error.message);
+        print("Error stack: " + error.stack);
       }
-      
-      var rect = new Rectangle(5, 3);
-      //var area = rect.area();
-      print(rect);
     `, () => {
-      expect(vs.currentScope.area).toBe(15);
-    }],*/
+
+      console.log('All console.log calls:');
+      consoleSpy.mock.calls.forEach((call, index) => {
+        console.log(`${index}: ${call[0]}`);
+      });
+
+      // Check for the expected log calls
+      expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringMatching(/^Error occurred:/));
+      expect(consoleSpy).toHaveBeenCalledWith("Creating Rectangle instance");
+      expect(consoleSpy).toHaveBeenCalledWith("Rectangle constructor called with width: 5, height: 3");
+      expect(consoleSpy).toHaveBeenCalledWith("Shape constructor called with name: rectangle");
+      expect(consoleSpy).toHaveBeenCalledWith("Calling describe method");
+      expect(consoleSpy).toHaveBeenCalledWith("Rectangle describe method called");
+      expect(consoleSpy).toHaveBeenCalledWith("Shape describe method called");
+      expect(consoleSpy).toHaveBeenCalledWith("Rectangle area method called");
+      expect(consoleSpy).toHaveBeenCalledWith("Final description: This is a rectangle with area 15");
+      expect(consoleSpy).toHaveBeenCalledWith("Final area: 15");
+    }],
     ['Built-in function: add', `
       var sum = add(5, 3);
     `, () => {

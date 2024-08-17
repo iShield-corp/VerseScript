@@ -39,7 +39,8 @@ exportSpecifier
     }
 
 statement
-  = macroDefinition
+  = tryCatchStatement
+  / macroDefinition
   / variableDeclaration
   / expressionStatement
   / ifStatement
@@ -49,6 +50,17 @@ statement
   / functionDefinition
   / classDefinition
   / macroExpansionStatement
+
+tryCatchStatement
+  = "try" _ tryBlock:block _ 
+    "catch" _ "(" _ errorParam:identifier _ ")" _ catchBlock:block {
+      return locationInfo(location(), "TryCatchStatement", { 
+        type: "tryCatchStatement", 
+        tryBlock, 
+        catchBlock,
+        errorParam 
+      });
+    }
 
 macroExpansionStatement
   = expansion:macroExpansion _ ";" _ {

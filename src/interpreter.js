@@ -191,6 +191,20 @@ class VerseScript {
             this.evaluateBlock(node.alternate);
           }
           break;
+        case "tryCatchStatement":
+            try {
+              this.evaluateBlock(node.tryBlock);
+            } catch (error) {
+              const previousScope = this.currentScope;
+              this.currentScope = Object.create(this.currentScope);
+              this.currentScope[node.errorParam.name] = error;
+              try {
+                this.evaluateBlock(node.catchBlock);
+              } finally {
+                this.currentScope = previousScope;
+              }
+            }
+            break;
         case "forLoop":
           this.evaluateForLoop(node);
           break;
@@ -298,44 +312,59 @@ class VerseScript {
   }
 
   createMethod(node, className) {
-    return function(instance, ...args) {
+    return (instance, ...args) => {
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
-      this.currentScope = Object.create(this.currentScope);
-      this.currentThis = instance;  // Set 'this' to the instance
+      this.currentScope = Object.create(this.globalScope);
+      this.currentThis = instance;
+  
+      // Add 'self' to the scope
+      this.currentScope.self = instance;
   
       // Add 'super' to the scope
       const classInfo = this.classes[className];
-      if (classInfo && classInfo.parentClass && classInfo.parentClass.methods[node.name.name]) {
-        this.currentScope.super = (...superArgs) => {
-          return classInfo.parentClass.methods[node.name.name].call(this, instance, ...superArgs);
-        };
+      if (classInfo && classInfo.parentClass) {
+        this.currentScope.super = {};
+        Object.entries(classInfo.parentClass.methods).forEach(([methodName, method]) => {
+          this.currentScope.super[methodName] = (...args) => method.call(this, instance, ...args);
+        });
       }
   
       node.params.forEach((param, index) => {
         this.currentScope[param.name] = args[index];
       });
+      
       try {
         return this.evaluateBlock(node.body);
+      } catch (e) {
+        if (e.type === "return") {
+          return e.value;
+        }
+        throw e;
       } finally {
         this.currentScope = previousScope;
         this.currentThis = previousThis;
       }
-    }.bind(this);
+    };
   }
 
+
   createConstructor(node, className) {
-    return function(instance, args) {
+    return (instance, args) => {
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
-      this.currentScope = Object.create(this.currentScope);
-      this.currentThis = instance;  // Set 'this' to the instance being constructed
+      this.currentScope = Object.create(this.globalScope);
+      this.currentThis = instance;
+  
+      // Add 'self' to the scope
+      this.currentScope.self = instance;
   
       // Add 'super' to the scope
       const classInfo = this.classes[className];
       if (classInfo && classInfo.parentClass) {
         this.currentScope.super = (...superArgs) => {
-          classInfo.parentClass.constructor.call(instance, ...superArgs);
+          // This is where the parent constructor is actually called
+          return classInfo.parentClass.constructor.call(this, instance, superArgs);
         };
       }
   
@@ -343,42 +372,43 @@ class VerseScript {
         this.currentScope[param.name] = args[index];
       });
       try {
-        this.evaluateBlock(node.body);
+        const result = this.evaluateBlock(node.body);
+        // Ensure that the instance properties are set
+        Object.assign(instance, this.currentScope.self);
+        return result;
       } finally {
         this.currentScope = previousScope;
         this.currentThis = previousThis;
       }
-    }.bind(this);
+    };
   }
 
-createObject(node) {
-  if (this.classes[node.className.name]) {
-    const classInfo = this.classes[node.className.name];
-    const instance = Object.create(null);
-    
-    // Set up the prototype chain
-    let currentClass = classInfo;
-    const prototypeChain = [];
-    while (currentClass) {
-      prototypeChain.unshift(currentClass);
-      currentClass = currentClass.parentClass;
-    }
-    
-    // Attach methods to the instance, overriding as necessary
-    prototypeChain.forEach(cls => {
-      Object.entries(cls.methods).forEach(([name, method]) => {
-        instance[name] = method.bind(this, instance);
+  createObject(node) {
+    if (this.classes[node.className.name]) {
+      const classInfo = this.classes[node.className.name];
+      const instance = Object.create(null);
+      
+      // Set up the prototype chain
+      let currentClass = classInfo;
+      const prototypeChain = [];
+      while (currentClass) {
+        prototypeChain.unshift(currentClass);
+        currentClass = currentClass.parentClass;
+      }
+      
+      // Attach methods to the instance, overriding as necessary
+      prototypeChain.forEach(cls => {
+        Object.entries(cls.methods).forEach(([name, method]) => {
+          instance[name] = (...args) => method(instance, ...args);
+        });
       });
-    });
-
-    // Call constructors in order, starting from the topmost superclass
-    const args = node.arguments.map((arg) => this.evaluateNode(arg));
-    prototypeChain.forEach(cls => {
-      cls.constructor.call(this, instance, args);
-    });
-
-    return instance;
-  } else if (this.jsClasses[node.className.name]) {
+  
+      // Call only the constructor of the instantiated class
+      const args = node.arguments.map((arg) => this.evaluateNode(arg));
+      classInfo.constructor.call(this, instance, args);
+  
+      return instance;
+    } else if (this.jsClasses[node.className.name]) {
       const JsClass = this.jsClasses[node.className.name];
       const instance = new JsClass(
         ...node.arguments.map((arg) => this.evaluateNode(arg)),
@@ -399,11 +429,15 @@ createObject(node) {
       const prop = node.callee.property.name;
       func = obj[prop];
       thisArg = obj;
+    } else if (node.callee.type === "identifier") {
+      func = this.resolveIdentifier(node.callee);
     } else {
       func = this.evaluateNode(node.callee);
     }
   
     if (typeof func !== "function") {
+      console.log('func:', func);
+      console.log('node:', node);
       throw new Error(`${node.callee.name || "Expression"} is not a function`);
     }
   
@@ -414,22 +448,6 @@ createObject(node) {
       return func.apply(thisArg, args);
     } finally {
       this.currentThis = previousThis;
-    }
-  }
-
-  evaluateMemberExpression(node) {
-    let obj;
-    if (node.object.type === "self") {
-      obj = this.currentThis;
-    } else {
-      obj = this.evaluateNode(node.object);
-    }
-    
-    if (node.computed) {
-      const prop = this.evaluateNode(node.property);
-      return obj[prop];
-    } else {
-      return obj[node.property.name];
     }
   }
 
@@ -451,6 +469,23 @@ createObject(node) {
     }
     throw new Error(`Undefined variable: ${node.name}`);
   }
+
+  evaluateMemberExpression(node) {
+    let obj;
+    if (node.object.type === "self") {
+      obj = this.currentThis;
+    } else {
+      obj = this.evaluateNode(node.object);
+    }
+    
+    if (node.computed) {
+      const prop = this.evaluateNode(node.property);
+      return obj[prop];
+    } else {
+      return obj[node.property.name];
+    }
+  }
+
 
   evaluateAssignment(node) {
     const value = this.evaluateNode(node.right);
