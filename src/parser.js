@@ -463,8 +463,12 @@ function peg$parse(input, options) {
       peg$c162 = function(name, params, body) {
             return locationInfo(location(), "MethodDefinition", { type: "methodDefinition", name, params, body });
           },
-      peg$c163 = function(name) {
-            return locationInfo(location(), "PropertyDefinition", { type: "propertyDefinition", name, value });
+      peg$c163 = function(name, initializer) {
+            return locationInfo(location(), "PropertyDefinition", { 
+              type: "propertyDefinition", 
+              name, 
+              value: initializer ? initializer[2] : null 
+            });
           },
       peg$c164 = function(head, tail) {
             const params = head ? [head] : [];
@@ -4663,7 +4667,7 @@ function peg$parse(input, options) {
               s6 = peg$parse_();
               if (s6 !== peg$FAILED) {
                 peg$savedPos = s0;
-                s1 = peg$c163(s1);
+                s1 = peg$c163(s1, s3);
                 s0 = s1;
               } else {
                 peg$currPos = s0;

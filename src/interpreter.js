@@ -284,16 +284,26 @@ class VerseScript {
 
   defineClass(node) {
     const methods = {};
+    const properties = {};
     let constructor = (instance, args) => {};
   
     for (const member of node.members) {
+      const isPrivate = member.name.name.startsWith('_');
       if (member.type === "methodDefinition") {
-        methods[member.name.name] = this.createMethod(member, node.name.name);
+        methods[member.name.name] = {
+          method: this.createMethod(member, node.name.name).bind(this),
+          isPrivate
+        };
+      } else if (member.type === "propertyDefinition") {
+        properties[member.name.name] = {
+          value: member.value !== null ? this.evaluateNode(member.value) : undefined,
+          isPrivate
+        };
       }
     }
   
     if (node.constructor) {
-      constructor = this.createConstructor(node.constructor, node.name.name);
+      constructor = this.createConstructor(node.constructor, node.name.name).bind(this);
     }
   
     let parentClass = null;
@@ -306,13 +316,53 @@ class VerseScript {
   
     this.classes[node.name.name] = {
       methods,
+      properties,
       constructor,
       parentClass
     };
+  
+    // Create a constructor function for the class
+    const classConstructor = (...args) => {
+      const instance = Object.create(null);
+  
+      // Set up the prototype chain
+      let currentClass = this.classes[node.name.name];
+      while (currentClass) {
+        Object.entries(currentClass.methods).forEach(([name, methodInfo]) => {
+          if (!methodInfo.isPrivate) {
+            instance[name] = (...args) => methodInfo.method(instance, ...args);
+          }
+        });
+        Object.entries(currentClass.properties).forEach(([name, propertyInfo]) => {
+          if (!propertyInfo.isPrivate) {
+            Object.defineProperty(instance, name, {
+              value: propertyInfo.value,
+              writable: true,
+              enumerable: true,
+              configurable: true
+            });
+          }
+        });
+        currentClass = currentClass.parentClass;
+      }
+  
+      // Call the constructor
+      constructor(instance, args);
+  
+      return instance;
+    };
+  
+    // Store the constructor function in the global scope
+    this.globalScope[node.name.name] = classConstructor;
   }
 
   createMethod(node, className) {
     return (instance, ...args) => {
+      console.log(`Entering method ${node.name.name} of class ${className}`, {
+        instance,
+        args
+      });
+  
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
       this.currentScope = Object.create(this.globalScope);
@@ -325,8 +375,13 @@ class VerseScript {
       const classInfo = this.classes[className];
       if (classInfo && classInfo.parentClass) {
         this.currentScope.super = {};
-        Object.entries(classInfo.parentClass.methods).forEach(([methodName, method]) => {
-          this.currentScope.super[methodName] = (...args) => method.call(this, instance, ...args);
+        Object.entries(classInfo.parentClass.methods).forEach(([methodName, methodInfo]) => {
+          if (!methodInfo.isPrivate) {
+            this.currentScope.super[methodName] = (...args) => {
+              console.log(`Calling super method ${methodName}`, { args });
+              return methodInfo.method(instance, ...args);
+            };
+          }
         });
       }
   
@@ -335,9 +390,12 @@ class VerseScript {
       });
       
       try {
-        return this.evaluateBlock(node.body);
+        const result = this.evaluateBlock(node.body);
+        console.log(`Exiting method ${node.name.name} of class ${className}`, { result });
+        return result;
       } catch (e) {
         if (e.type === "return") {
+          console.log(`Returning from method ${node.name.name} of class ${className}`, { returnValue: e.value });
           return e.value;
         }
         throw e;
@@ -363,8 +421,7 @@ class VerseScript {
       const classInfo = this.classes[className];
       if (classInfo && classInfo.parentClass) {
         this.currentScope.super = (...superArgs) => {
-          // This is where the parent constructor is actually called
-          return classInfo.parentClass.constructor.call(this, instance, superArgs);
+          return classInfo.parentClass.constructor(instance, superArgs);
         };
       }
   
@@ -382,11 +439,14 @@ class VerseScript {
       }
     };
   }
-
+  
   createObject(node) {
     if (this.classes[node.className.name]) {
       const classInfo = this.classes[node.className.name];
       const instance = Object.create(null);
+      
+      // Add constructor property
+      instance.constructor = { name: node.className.name };
       
       // Set up the prototype chain
       let currentClass = classInfo;
@@ -396,16 +456,23 @@ class VerseScript {
         currentClass = currentClass.parentClass;
       }
       
-      // Attach methods to the instance, overriding as necessary
+      // Attach methods to the instance, including private methods
       prototypeChain.forEach(cls => {
-        Object.entries(cls.methods).forEach(([name, method]) => {
-          instance[name] = (...args) => method(instance, ...args);
+        Object.entries(cls.methods).forEach(([name, methodInfo]) => {
+          instance[name] = (...args) => methodInfo.method(instance, ...args);
+        });
+      });
+  
+      // Attach properties to the instance, including private properties
+      prototypeChain.forEach(cls => {
+        Object.entries(cls.properties).forEach(([name, propertyInfo]) => {
+          instance[name] = propertyInfo.value;
         });
       });
   
       // Call only the constructor of the instantiated class
       const args = node.arguments.map((arg) => this.evaluateNode(arg));
-      classInfo.constructor.call(this, instance, args);
+      classInfo.constructor(instance, args);
   
       return instance;
     } else if (this.jsClasses[node.className.name]) {
@@ -427,25 +494,53 @@ class VerseScript {
     if (node.callee.type === "memberExpression") {
       const obj = this.evaluateNode(node.callee.object);
       const prop = node.callee.property.name;
-      func = obj[prop];
+      try {
+        func = this.evaluateMemberExpression(node.callee);
+      } catch (error) {
+        console.error('Error accessing method:', error.message);
+        throw error;
+      }
       thisArg = obj;
+      
+      console.log('Calling member function:', {
+        objectType: typeof obj,
+        object: obj,
+        property: prop,
+        function: func
+      });
     } else if (node.callee.type === "identifier") {
       func = this.resolveIdentifier(node.callee);
+      console.log('Calling identifier function:', {
+        identifier: node.callee.name,
+        function: func
+      });
     } else {
       func = this.evaluateNode(node.callee);
+      console.log('Calling evaluated function:', {
+        evaluatedFunction: func
+      });
     }
   
     if (typeof func !== "function") {
-      console.log('func:', func);
-      console.log('node:', node);
+      console.error('Attempted to call non-function:', {
+        callee: node.callee,
+        evaluatedFunction: func
+      });
       throw new Error(`${node.callee.name || "Expression"} is not a function`);
     }
   
     const args = node.arguments.map(arg => this.evaluateNode(arg));
+    console.log('Function arguments:', args);
+  
     const previousThis = this.currentThis;
     this.currentThis = thisArg;
     try {
-      return func.apply(thisArg, args);
+      const result = func.apply(thisArg, args);
+      console.log('Function call result:', result);
+      return result;
+    } catch (error) {
+      console.error('Error during function call:', error);
+      throw error;
     } finally {
       this.currentThis = previousThis;
     }
@@ -478,12 +573,29 @@ class VerseScript {
       obj = this.evaluateNode(node.object);
     }
     
-    if (node.computed) {
-      const prop = this.evaluateNode(node.property);
-      return obj[prop];
-    } else {
-      return obj[node.property.name];
+    const prop = node.computed ? this.evaluateNode(node.property) : node.property.name;
+    
+    // Check if we're accessing a class member
+    if (obj && typeof obj === 'object') {
+      const className = obj.constructor ? obj.constructor.name : null;
+      const classInfo = className ? this.classes[className] : null;
+      if (classInfo) {
+        const method = classInfo.methods[prop];
+        const property = classInfo.properties[prop];
+        
+        if ((method && method.isPrivate) || (property && property.isPrivate)) {
+          if (this.currentThis !== obj) {
+            throw new Error(`Cannot access private member '${prop}'`);
+          }
+        }
+      }
     }
+    
+    if (prop.startsWith('_') && this.currentThis !== obj) {
+      throw new Error(`Cannot access private member '${prop}'`);
+    }
+    
+    return obj[prop];
   }
 
 
