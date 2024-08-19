@@ -15,7 +15,7 @@
     "build:dev": "npm run compile:grammar && webpack --config webpack.config.js --mode development",
     "build:prod": "npm run compile:grammar && webpack --config webpack.config.js --mode production",
     "prepublishOnly": "npm run build",
-    "build": "npm run compile:grammar && webpack --config webpack.config.js --mode production",
+    "build": "npm run compile:grammar && webpack --config webpack.config.js --mode production"
 
   },
   "repository": {
