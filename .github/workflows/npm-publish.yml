@@ -74,6 +74,9 @@ jobs:
         with:
           name: dist
           path: dist
+      - name: Authenticate with npm
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
       - name: Publish to npm
         run: npm publish
         env:
