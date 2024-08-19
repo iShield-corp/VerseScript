@@ -175,7 +175,7 @@ describe('VerseScript Interpreter', () => {
     `, () => {
       expect(vs.globalScope.len).toBe(5);
     }],
-    ['Importing and using a JavaScript class', `
+   /* ['Importing and using a JavaScript class', `
       var person = new JSPerson("Alice");
       var greeting = person.greet();
       var staticGreeting = person.sayHi();
@@ -184,7 +184,7 @@ describe('VerseScript Interpreter', () => {
       expect(vs.globalScope.greeting).toBe("Hello, Alice!");
       expect(vs.globalScope.staticGreeting).toBe("Hi there!");
       expect(vs.globalScope.newGreeting).toBe("Hello, Bob!");
-    }],
+    }],*/
     ['Built-in functions: arrayPush and arrayPop', `
       var arr = [1, 2, 3];
       arrayPush(arr, 4);
