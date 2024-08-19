@@ -19,7 +19,7 @@ jobs:
           node-version: '16'
       - run: npm ci
       - run: npm test
-      - run: npm run build
+      - run: npm run build:prod
       - name: Upload build artifacts
         uses: actions/upload-artifact@v2
         with:

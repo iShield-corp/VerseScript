@@ -16,7 +16,22 @@ describe('VerseScript Interpreter', () => {
   beforeEach(() => {
     vs = new VerseScript();
     consoleSpy.mockClear();
+    class JSPerson {
+      constructor(name) {
+        this.name = name;
+      }
+  
+      greet() {
+        return `Hello, ${this.name}!`;
+      }
+  
+      static sayHi() {
+        return "Hi there!";
+      }
+    }
+    // Add the JSPerson class to VerseScript
 
+    vs.addJsClass('JSPerson', JSPerson);
   });
 
   afterAll(() => {
@@ -135,6 +150,7 @@ describe('VerseScript Interpreter', () => {
       expect(consoleSpy).toHaveBeenCalledWith("Final description: This is a rectangle with area 15");
       expect(consoleSpy).toHaveBeenCalledWith("Final area: 15");
     }],
+
     ['Built-in function: add', `
       var sum = add(5, 3);
     `, () => {
@@ -158,6 +174,16 @@ describe('VerseScript Interpreter', () => {
       var len = getStringLength("Hello");
     `, () => {
       expect(vs.globalScope.len).toBe(5);
+    }],
+    ['Importing and using a JavaScript class', `
+      var person = new JSPerson("Alice");
+      var greeting = person.greet();
+      var staticGreeting = person.sayHi();
+      var newGreeting = person.greet();
+    `, () => {
+      expect(vs.globalScope.greeting).toBe("Hello, Alice!");
+      expect(vs.globalScope.staticGreeting).toBe("Hi there!");
+      expect(vs.globalScope.newGreeting).toBe("Hello, Bob!");
     }],
     ['Built-in functions: arrayPush and arrayPop', `
       var arr = [1, 2, 3];
