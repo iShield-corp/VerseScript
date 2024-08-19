@@ -1,6 +1,10 @@
 {
   "name": "versescript",
+<<<<<<< HEAD
   "version": "0.7.10",
+=======
+  "version": "0.7.14",
+>>>>>>> a0ba4baf62a95f7eefd355a34927eafcd38a6eb0
   "description": "VerseScript is specifically built for microtron AI's AR/VR Verse platform. VerseScript was made to develop apps on verse, however it can be used for more generic usage. It works well in any javascript project, imports javascript functions or classes to be used in VerseScript.",
   "main": "dist/verseScript.min.js",
   "files": [
@@ -16,7 +20,6 @@
     "build:prod": "npm run compile:grammar && webpack --config webpack.config.js --mode production",
     "prepublishOnly": "npm run build",
     "build": "npm run compile:grammar && webpack --config webpack.config.js --mode production"
-
   },
   "repository": {
     "type": "git",
