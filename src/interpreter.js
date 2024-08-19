@@ -8,8 +8,22 @@ class VerseScript {
     this.jsFunctions = {
       print: (msg) => console.log(msg),
       add: (a, b) => a + b,
-      toJson: (obj) => JSON.stringify(obj),
-      parseJson: (str) => JSON.parse(str),
+      toJson: (obj) => {
+        const replacer = (key, value) => {
+          if (key === 'constructor') {
+            return undefined;
+          }
+          return value;
+        };
+        return JSON.stringify(obj, replacer);
+      },
+      parseJson: (str) => {
+        const parsed = JSON.parse(str);
+        if (typeof parsed === 'object' && parsed !== null) {
+          delete parsed.constructor;
+        }
+        return parsed;
+      },
       getStringLength: (str) => str.length,
       arrayPush: (arr, item) => {
         arr.push(item);
@@ -439,7 +453,7 @@ class VerseScript {
       }
     };
   }
-  
+
   createObject(node) {
     if (this.classes[node.className.name]) {
       const classInfo = this.classes[node.className.name];
