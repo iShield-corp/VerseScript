@@ -5,6 +5,11 @@ class VerseScript {
     this.globalScope = {};
     this.classes = {};
     this.jsClasses = {};
+    this.decorators = {
+      log: this.createLogDecorator(),
+      deprecated: this.createDeprecatedDecorator(),
+      memoize: this.createMemoizeDecorator()
+    };
     this.jsFunctions = {
       print: (msg) => console.log(msg),
       add: (a, b) => a + b,
@@ -46,6 +51,60 @@ class VerseScript {
     }
     this.jsFunctions[name] = func;
   }
+
+  addDecorator(name, decorator) {
+    this.decorators[name] = decorator;
+  }
+
+  createLogDecorator() {
+    return {
+      method: (target, name, descriptor) => {
+        const original = descriptor.value;
+        descriptor.value = function(...args) {
+          console.log(`Calling ${name} with args:`, args);
+          const result = original.apply(this, args);
+          console.log(`${name} returned:`, result);
+          return result;
+        };
+        return descriptor;
+      }
+    };
+  }
+
+  createDeprecatedDecorator() {
+    return {
+      method: (target, name, descriptor) => {
+        const original = descriptor.value;
+        descriptor.value = function(...args) {
+          console.warn(`Warning: ${name} is deprecated`);
+          return original.apply(this, args);
+        };
+        return descriptor;
+      }
+    };
+  }
+
+  createMemoizeDecorator() {
+    return {
+      method: (target, name, descriptor) => {
+        const original = descriptor.value;
+        const cache = new Map();
+        
+        descriptor.value = function(...args) {
+          const key = JSON.stringify(args);
+          if (cache.has(key)) {
+            return cache.get(key);
+          }
+          const result = original.apply(this, args);
+          cache.set(key, result);
+          return result;
+        };
+        return descriptor;
+      }
+    };
+  }
+
+
 
   addJsClass(name, jsClass) {
     if (
@@ -193,6 +252,8 @@ class VerseScript {
           const value = node.init ? this.evaluateNode(node.init) : undefined;
           this.currentScope[node.id.name] = value;
           break;
+        case "nullLiteral":
+          return null;
         case "macroExpansion":
           return this.expandMacro(node);
         case "functionDefinition":
@@ -297,85 +358,138 @@ class VerseScript {
   }
 
   defineClass(node) {
-    const methods = {};
-    const properties = {};
-    let constructor = (instance, args) => {};
-  
-    for (const member of node.members) {
-      const isPrivate = member.name.name.startsWith('_');
-      if (member.type === "methodDefinition") {
-        methods[member.name.name] = {
-          method: this.createMethod(member, node.name.name).bind(this),
-          isPrivate
-        };
-      } else if (member.type === "propertyDefinition") {
-        properties[member.name.name] = {
-          value: member.value !== null ? this.evaluateNode(member.value) : undefined,
-          isPrivate
-        };
-      }
+  // Initialize classInfo with default values
+  let classInfo = {
+    methods: {},
+    properties: {},
+    constructor: (instance, args) => {},
+    parentClass: null
+  };
+
+  // Handle class inheritance
+  if (node.superClass) {
+    classInfo.parentClass = this.classes[node.superClass.name];
+    if (!classInfo.parentClass) {
+      throw new Error(`Superclass ${node.superClass.name} is not defined`);
     }
-  
-    if (node.constructor) {
-      constructor = this.createConstructor(node.constructor, node.name.name).bind(this);
-    }
-  
-    let parentClass = null;
-    if (node.superClass) {
-      parentClass = this.classes[node.superClass.name];
-      if (!parentClass) {
-        throw new Error(`Superclass ${node.superClass.name} is not defined`);
-      }
-    }
-  
-    this.classes[node.name.name] = {
-      methods,
-      properties,
-      constructor,
-      parentClass
-    };
-  
-    // Create a constructor function for the class
-    const classConstructor = (...args) => {
-      const instance = Object.create(null);
-  
-      // Set up the prototype chain
-      let currentClass = this.classes[node.name.name];
-      while (currentClass) {
-        Object.entries(currentClass.methods).forEach(([name, methodInfo]) => {
-          if (!methodInfo.isPrivate) {
-            instance[name] = (...args) => methodInfo.method(instance, ...args);
-          }
-        });
-        Object.entries(currentClass.properties).forEach(([name, propertyInfo]) => {
-          if (!propertyInfo.isPrivate) {
-            Object.defineProperty(instance, name, {
-              value: propertyInfo.value,
-              writable: true,
-              enumerable: true,
-              configurable: true
-            });
-          }
-        });
-        currentClass = currentClass.parentClass;
-      }
-  
-      // Call the constructor
-      constructor(instance, args);
-  
-      return instance;
-    };
-  
-    // Store the constructor function in the global scope
-    this.globalScope[node.name.name] = classConstructor;
   }
+
+  // Apply class decorators if present
+  if (node.decorators && node.decorators.length > 0) {
+    for (const decorator of node.decorators) {
+      const decoratorFn = this.decorators[decorator.name.name];
+      if (!decoratorFn) {
+        throw new Error(`Unknown decorator: @${decorator.name.name}`);
+      }
+      if (decoratorFn.class) {
+        classInfo = decoratorFn.class(classInfo);
+      }
+    }
+  }
+
+  // Process class members (methods and properties)
+  for (const member of node.members) {
+    const isPrivate = member.name.name.startsWith('_');
+
+    if (member.type === "methodDefinition") {
+      // Create basic method descriptor
+      let descriptor = {
+        value: this.createMethod(member, node.name.name).bind(this),
+        writable: true,
+        enumerable: true,
+        configurable: true
+      };
+
+      // Apply method decorators if present
+      if (member.decorators && member.decorators.length > 0) {
+        for (const decorator of member.decorators) {
+          const decoratorFn = this.decorators[decorator.name.name];
+          if (!decoratorFn) {
+            throw new Error(`Unknown decorator: @${decorator.name.name}`);
+          }
+          if (decoratorFn.method) {
+            descriptor = decoratorFn.method(classInfo, member.name.name, descriptor);
+          }
+        }
+      }
+
+      // Store the method with its privacy flag
+      classInfo.methods[member.name.name] = {
+        method: descriptor.value,
+        isPrivate
+      };
+    } else if (member.type === "propertyDefinition") {
+      // Handle property definitions
+      const value = member.value !== null ? this.evaluateNode(member.value) : undefined;
+      classInfo.properties[member.name.name] = {
+        value,
+        isPrivate
+      };
+    }
+  }
+
+  // Handle constructor if defined
+  if (node.constructor) {
+    classInfo.constructor = this.createConstructor(node.constructor, node.name.name).bind(this);
+  }
+
+  // Store the class definition
+  this.classes[node.name.name] = classInfo;
+
+  // Create the constructor function for creating instances
+  const classConstructor = (...args) => {
+    const instance = Object.create(null);
+
+    // Add constructor reference
+    instance.constructor = { name: node.name.name };
+
+    // Build prototype chain and add members
+    let currentClass = this.classes[node.name.name];
+    while (currentClass) {
+      // Add methods from current class
+      Object.entries(currentClass.methods).forEach(([name, methodInfo]) => {
+        if (!methodInfo.isPrivate || this.currentThis === instance) {
+          instance[name] = (...args) => methodInfo.method(instance, ...args);
+        }
+      });
+
+      // Add properties from current class
+      Object.entries(currentClass.properties).forEach(([name, propertyInfo]) => {
+        if (!propertyInfo.isPrivate || this.currentThis === instance) {
+          Object.defineProperty(instance, name, {
+            value: propertyInfo.value,
+            writable: true,
+            enumerable: true,
+            configurable: true
+          });
+        }
+      });
+
+      // Move up the inheritance chain
+      currentClass = currentClass.parentClass;
+    }
+
+    // Call the constructor
+    const result = classInfo.constructor(instance, args);
+    
+    // Ensure instance properties are properly set
+    if (result !== undefined) {
+      Object.assign(instance, result);
+    }
+
+    return instance;
+  };
+
+  // Store constructor in global scope
+  this.globalScope[node.name.name] = classConstructor;
+}
 
   createMethod(node, className) {
     return (instance, ...args) => {
-      console.log(`Entering method ${node.name.name} of class ${className}`, {
+      /*console.log(`Entering method ${node.name.name} of class ${className}`, {
         instance,
         args
-      });
+      });*/
   
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
@@ -392,7 +506,7 @@ class VerseScript {
         Object.entries(classInfo.parentClass.methods).forEach(([methodName, methodInfo]) => {
           if (!methodInfo.isPrivate) {
             this.currentScope.super[methodName] = (...args) => {
-              console.log(`Calling super method ${methodName}`, { args });
+              //console.log(`Calling super method ${methodName}`, { args });
               return methodInfo.method(instance, ...args);
             };
           }
@@ -405,11 +519,11 @@ class VerseScript {
       
       try {
         const result = this.evaluateBlock(node.body);
-        console.log(`Exiting method ${node.name.name} of class ${className}`, { result });
+        //console.log(`Exiting method ${node.name.name} of class ${className}`, { result });
         return result;
       } catch (e) {
         if (e.type === "return") {
-          console.log(`Returning from method ${node.name.name} of class ${className}`, { returnValue: e.value });
+          //console.log(`Returning from method ${node.name.name} of class ${className}`, { returnValue: e.value });
           return e.value;
         }
         throw e;
@@ -516,23 +630,23 @@ class VerseScript {
       }
       thisArg = obj;
       
-      console.log('Calling member function:', {
+      /*console.log('Calling member function:', {
         objectType: typeof obj,
         object: obj,
         property: prop,
         function: func
-      });
+      });*/
     } else if (node.callee.type === "identifier") {
       func = this.resolveIdentifier(node.callee);
-      console.log('Calling identifier function:', {
+      /*console.log('Calling identifier function:', {
         identifier: node.callee.name,
         function: func
-      });
+      });*/
     } else {
       func = this.evaluateNode(node.callee);
-      console.log('Calling evaluated function:', {
+      /*console.log('Calling evaluated function:', {
         evaluatedFunction: func
-      });
+      });*/
     }
   
     if (typeof func !== "function") {
@@ -544,13 +658,13 @@ class VerseScript {
     }
   
     const args = node.arguments.map(arg => this.evaluateNode(arg));
-    console.log('Function arguments:', args);
+    //console.log('Function arguments:', args);
   
     const previousThis = this.currentThis;
     this.currentThis = thisArg;
     try {
       const result = func.apply(thisArg, args);
-      console.log('Function call result:', result);
+      //console.log('Function call result:', result);
       return result;
     } catch (error) {
       console.error('Error during function call:', error);

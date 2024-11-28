@@ -354,8 +354,12 @@ methodDefinition
     }
 
 propertyDefinition
-  = name:identifier _ ("=" _ value:expression)? _ ";" _ {
-      return locationInfo(location(), "PropertyDefinition", { type: "propertyDefinition", name, value });
+  = name:identifier _ initializer:("=" _ expression)? _ ";" _ {
+      return locationInfo(location(), "PropertyDefinition", { 
+        type: "propertyDefinition", 
+        name, 
+        value: initializer ? initializer[2] : null 
+      });
     }
 
 parameterList

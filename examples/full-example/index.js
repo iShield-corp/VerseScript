@@ -1,9 +1,47 @@
 
+class compute {
+  constructor() {
+    this.result = 0;
+  }
 
+  add(x,y) {
+    return x + y;
+  }
+}
 
 const interpreter = new Verse.VerseScript();
+
+interpreter.addJsClass("compute", compute);
+
 let script = `
      try {
+      class DataProcessor {
+    @memoize
+    processLargeNumber(n) {
+        print("Processing...");
+        // Simulate expensive calculation
+        var result = 0;
+        //for(var i = 0; i < n * 1000000; i++) {
+            result = result + 500;
+        //}
+        return result;
+    }
+}
+
+var processor = new DataProcessor();
+
+// First call - will be slow
+print(processor.processLargeNumber(1));  // Shows "Processing..."
+                                        // Takes some time
+
+// Second call - instant result
+print(processor.processLargeNumber(1));
+
+
+
+        var com = new compute();
+        print(com.add(3,3));
+
         class Shape {
           constructor(name) {
             self.name = name;
@@ -17,6 +55,28 @@ let script = `
           }
         }
     
+        macro validateNumber(num) {
+          typeof num == "number" && !isNaN(num)
+        };
+
+        // Use the macro in functions
+        function divide(a, b) {
+          if (!#validateNumber(a) || !#validateNumber(b)) {
+            print("Invalid numbers");
+            return null;
+          }
+          if (b == 0) {
+            print("Cannot divide by zero");
+            return null;
+          }
+          return a / b;
+        }
+
+        print(divide(10, 2));    // Outputs: 5
+        print(divide("10", 2));  // Outputs: Invalid numbers
+        print(divide(10, 0));
+
+
         class Rectangle extends Shape {
           constructor(width, height) {
             print("1");

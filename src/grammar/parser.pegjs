@@ -193,6 +193,20 @@ primaryExpression
   / identifier
   / parenthesizedExpression
 
+decorator
+  = "@" name:identifier args:decoratorArgs? _ {
+      return locationInfo(location(), "Decorator", { 
+        type: "decorator",
+        name,
+        arguments: args || []
+      });
+    }
+
+decoratorArgs
+  = "(" _ args:argumentList? _ ")" {
+      return args || [];
+    }
+
 parenthesizedExpression
   = "(" _ expression:expression _ ")" { return expression; }
 
@@ -225,10 +239,16 @@ literal
   / boolean
   / char
   / arrayLiteral
+  / nullLiteral
 
 number
   = float
   / integer
+
+nullLiteral
+  = "null" { 
+      return locationInfo(location(), "NullLiteral", { type: "nullLiteral", value: null }); 
+    }
 
 integer
   = digits:[0-9]+ { 
@@ -328,7 +348,8 @@ functionDefinition
     }
 
 classDefinition
-  = "class" __ name:identifier __ 
+  = decorators:decorator* _
+    "class" __ name:identifier __ 
     extendsClause:("extends" __ identifier __)? 
     "{" _ 
     constructor:constructorDefinition?
@@ -336,6 +357,7 @@ classDefinition
     _ "}" _ {
       return locationInfo(location(), "ClassDefinition", { 
         type: "classDefinition", 
+        decorators,
         name, 
         superClass: extendsClause ? extendsClause[2] : null,
         constructor: constructor || { type: "constructorDefinition", params: [], body: [] },
@@ -349,8 +371,15 @@ constructorDefinition
     }
 
 methodDefinition
-  = name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
-      return locationInfo(location(), "MethodDefinition", { type: "methodDefinition", name, params, body });
+  = decorators:decorator* _
+    name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
+      return locationInfo(location(), "MethodDefinition", { 
+        type: "methodDefinition", 
+        decorators,
+        name, 
+        params, 
+        body 
+      });
     }
 
 propertyDefinition
