@@ -185,7 +185,8 @@ memberExpression
     }
 
 primaryExpression
-  = literal
+  = awaitExpression
+  / literal
   / arrayLiteral
   / objectCreation
   / macroExpansion
@@ -231,8 +232,11 @@ identifier
     }
 
 keyword
-  = ("function" / "class" / "extends" / "constructor" / "var" / "let" / "const" / "if" / "else" / "for" / "while" / "return" / "true" / "false" / "null" / "new" / "macro" / "import" / "export" / "from" / "as" / "self") !identifierPart
-
+  = ("function" / "class" / "extends" / "constructor" / "var" / "let" / "const" 
+     / "if" / "else" / "for" / "while" / "return" / "true" / "false" / "null" 
+     / "new" / "macro" / "import" / "export" / "from" / "as" / "self" 
+     / "async" / "await") !identifierPart
+     
 literal
   = number
   / string
@@ -343,8 +347,14 @@ block
   = "{" _ statements:statement* _ "}" _ { return statements; }
 
 functionDefinition
-  = "function" __ name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
-      return locationInfo(location(), "FunctionDefinition", { type: "functionDefinition", name, params, body });
+  = async:"async"? __ "function" __ name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
+      return locationInfo(location(), "FunctionDefinition", { 
+        type: "functionDefinition", 
+        name, 
+        params, 
+        body,
+        isAsync: !!async 
+      });
     }
 
 classDefinition
@@ -372,13 +382,23 @@ constructorDefinition
 
 methodDefinition
   = decorators:decorator* _
+    async:"async"? __
     name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
       return locationInfo(location(), "MethodDefinition", { 
         type: "methodDefinition", 
         decorators,
         name, 
         params, 
-        body 
+        body,
+        isAsync: !!async
+      });
+    }
+
+  awaitExpression
+  = "await" __ expression:expression {
+      return locationInfo(location(), "AwaitExpression", {
+        type: "awaitExpression",
+        argument: expression
       });
     }
 

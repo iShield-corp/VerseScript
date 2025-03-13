@@ -140,7 +140,7 @@ class VerseScript {
     return this.modules.get(files[0]).exports;
   }
 
-  interpret(input, isFilename = false) {
+  async interpret(input, isFilename = false) {
     let content;
     let filename;
 
@@ -149,7 +149,7 @@ class VerseScript {
       if (this.modules.has(filename)) {
         return this.modules.get(filename).exports;
       }
-      content = ""; // await this.fetchModuleContent(filename);
+      content = await this.fetchModuleContent(filename);
     } else {
       content = input;
       filename = "inline-script";
@@ -167,7 +167,7 @@ class VerseScript {
     try {
       const ast = parser.parse(content);
       for (const node of ast.body) {
-        this.evaluateNode(node);
+        await this.evaluateNode(node);
       }
     } catch (error) {
       if (error.location) {
@@ -242,76 +242,91 @@ class VerseScript {
     return await this.interpret(moduleFile, true);
   }
 
-  evaluateNode(node) {
+  async evaluateNode(node) {
     try {
       switch (node.type) {
         case "classDefinition":
           this.defineClass(node);
           break;
         case "variableDeclaration":
-          const value = node.init ? this.evaluateNode(node.init) : undefined;
+          const value = node.init ? await this.evaluateNode(node.init) : undefined;
           this.currentScope[node.id.name] = value;
           break;
         case "nullLiteral":
           return null;
         case "macroExpansion":
-          return this.expandMacro(node);
+          return await this.expandMacro(node);
         case "functionDefinition":
-          this.currentScope[node.name.name] = this.createFunction(node);
+          const func = async (...args) => {
+            const previousScope = this.currentScope;
+            this.currentScope = Object.create(this.currentScope);
+            node.params.forEach((param, index) => {
+              this.currentScope[param.name] = args[index];
+            });
+            try {
+              const result = await this.evaluateBlock(node.body);
+              return result;
+            } catch (e) {
+              if (e.type === "return") {
+                return e.value;
+              }
+              throw e;
+            } finally {
+              this.currentScope = previousScope;
+            }
+          };
+          this.currentScope[node.name.name] = func;
           break;
         case "ifStatement":
-          if (this.evaluateNode(node.test)) {
-            this.evaluateBlock(node.consequent);
+          if (await this.evaluateNode(node.test)) {
+            await this.evaluateBlock(node.consequent);
           } else if (node.alternate) {
-            this.evaluateBlock(node.alternate);
+            await this.evaluateBlock(node.alternate);
           }
           break;
         case "tryCatchStatement":
+          try {
+            await this.evaluateBlock(node.tryBlock);
+          } catch (error) {
+            const previousScope = this.currentScope;
+            this.currentScope = Object.create(this.currentScope);
+            this.currentScope[node.errorParam.name] = error;
             try {
-              this.evaluateBlock(node.tryBlock);
-            } catch (error) {
-              const previousScope = this.currentScope;
-              this.currentScope = Object.create(this.currentScope);
-              this.currentScope[node.errorParam.name] = error;
-              try {
-                this.evaluateBlock(node.catchBlock);
-              } finally {
-                this.currentScope = previousScope;
-              }
+              await this.evaluateBlock(node.catchBlock);
+            } finally {
+              this.currentScope = previousScope;
             }
-            break;
+          }
+          break;
         case "forLoop":
-          this.evaluateForLoop(node);
+          await this.evaluateForLoop(node);
           break;
         case "whileLoop":
-          while (this.evaluateNode(node.test)) {
-            //console.log(node.test);
-            //console.log('Current Scope: ', this.currentScope);
-            //console.log('Global Scope: ', this.globalScope);
-            //console.log('Current This: ', this.currentThis);
-            this.evaluateBlock(node.body);
+          while (await this.evaluateNode(node.test)) {
+            await this.evaluateBlock(node.body);
           }
           break;
         case "returnStatement":
-          this.returnValue = node.value
-            ? this.evaluateNode(node.value)
-            : undefined;
+          this.returnValue = node.value ? await this.evaluateNode(node.value) : undefined;
           throw { type: "return", value: this.returnValue };
         case "assignment":
-          return this.evaluateAssignment(node);
+          return await this.evaluateAssignment(node);
         case "objectCreation":
-          return this.createObject(node);
+          return await this.createObject(node);
         case "functionCall":
-          return this.callFunction(node);
+          return await this.callFunction(node);
         case "self":
           if (!this.currentThis) {
             throw new Error("'self' used outside of a class method");
           }
           return this.currentThis;
         case "memberExpression":
-          return this.evaluateMemberExpression(node);
+          return await this.evaluateMemberExpression(node);
         case "identifier":
           return this.resolveIdentifier(node);
+        case "awaitExpression":
+          const awaitedValue = await this.evaluateNode(node.argument);
+          return awaitedValue;
         case "integer":
         case "float":
         case "string":
@@ -319,9 +334,9 @@ class VerseScript {
         case "char":
           return node.value;
         case "logicalOr":
-          return this.evaluateNode(node.left) || this.evaluateNode(node.right);
+          return await this.evaluateNode(node.left) || await this.evaluateNode(node.right);
         case "logicalAnd":
-          return this.evaluateNode(node.left) && this.evaluateNode(node.right);
+          return await this.evaluateNode(node.left) && await this.evaluateNode(node.right);
         case "equality":
           return this.evaluateEquality(node);
         case "comparison":
@@ -334,18 +349,16 @@ class VerseScript {
         case "macroDefinition":
           this.defineMacro(node);
           break;
-        case "macroExpansion":
-          return this.expandMacro(node);
         case "importDeclaration":
-          this.evaluateImport(node);
+          await this.evaluateImport(node);
           break;
         case "exportDeclaration":
-          this.evaluateExport(node);
+          await this.evaluateExport(node);
           break;
         case "arrayLiteral":
-          return node.elements.map(element => this.evaluateNode(element));
+          return Promise.all(node.elements.map(element => this.evaluateNode(element)));
         case "expressionStatement":
-          return this.evaluateNode(node.expression);
+          return await this.evaluateNode(node.expression);
         default:
           throw new Error(`Unknown node type: ${node.type}`);
       }
@@ -484,55 +497,45 @@ class VerseScript {
   this.globalScope[node.name.name] = classConstructor;
 }
 
-  createMethod(node, className) {
-    return (instance, ...args) => {
-      /*console.log(`Entering method ${node.name.name} of class ${className}`, {
-        instance,
-        args
-      });*/
-  
-      const previousScope = this.currentScope;
-      const previousThis = this.currentThis;
-      this.currentScope = Object.create(this.globalScope);
-      this.currentThis = instance;
-  
-      // Add 'self' to the scope
-      this.currentScope.self = instance;
-  
-      // Add 'super' to the scope
-      const classInfo = this.classes[className];
-      if (classInfo && classInfo.parentClass) {
-        this.currentScope.super = {};
-        Object.entries(classInfo.parentClass.methods).forEach(([methodName, methodInfo]) => {
-          if (!methodInfo.isPrivate) {
-            this.currentScope.super[methodName] = (...args) => {
-              //console.log(`Calling super method ${methodName}`, { args });
-              return methodInfo.method(instance, ...args);
-            };
-          }
-        });
-      }
-  
-      node.params.forEach((param, index) => {
-        this.currentScope[param.name] = args[index];
-      });
-      
-      try {
-        const result = this.evaluateBlock(node.body);
-        //console.log(`Exiting method ${node.name.name} of class ${className}`, { result });
-        return result;
-      } catch (e) {
-        if (e.type === "return") {
-          //console.log(`Returning from method ${node.name.name} of class ${className}`, { returnValue: e.value });
-          return e.value;
+createMethod(node, className) {
+  return async (instance, ...args) => {
+    const previousScope = this.currentScope;
+    const previousThis = this.currentThis;
+    this.currentScope = Object.create(this.globalScope);
+    this.currentThis = instance;
+
+    this.currentScope.self = instance;
+
+    const classInfo = this.classes[className];
+    if (classInfo && classInfo.parentClass) {
+      this.currentScope.super = {};
+      Object.entries(classInfo.parentClass.methods).forEach(([methodName, methodInfo]) => {
+        if (!methodInfo.isPrivate) {
+          this.currentScope.super[methodName] = async (...args) => {
+            return await methodInfo.method(instance, ...args);
+          };
         }
-        throw e;
-      } finally {
-        this.currentScope = previousScope;
-        this.currentThis = previousThis;
+      });
+    }
+
+    node.params.forEach((param, index) => {
+      this.currentScope[param.name] = args[index];
+    });
+    
+    try {
+      const result = await this.evaluateBlock(node.body);
+      return result;
+    } catch (e) {
+      if (e.type === "return") {
+        return e.value;
       }
-    };
-  }
+      throw e;
+    } finally {
+      this.currentScope = previousScope;
+      this.currentThis = previousThis;
+    }
+  };
+}
 
 
   createConstructor(node, className) {
@@ -615,38 +618,24 @@ class VerseScript {
     }
   }
 
-  callFunction(node) {
+  async callFunction(node) {
     let func;
     let thisArg = null;
   
     if (node.callee.type === "memberExpression") {
-      const obj = this.evaluateNode(node.callee.object);
+      const obj = await this.evaluateNode(node.callee.object);
       const prop = node.callee.property.name;
       try {
-        func = this.evaluateMemberExpression(node.callee);
+        func = await this.evaluateMemberExpression(node.callee);
       } catch (error) {
         console.error('Error accessing method:', error.message);
         throw error;
       }
       thisArg = obj;
-      
-      /*console.log('Calling member function:', {
-        objectType: typeof obj,
-        object: obj,
-        property: prop,
-        function: func
-      });*/
     } else if (node.callee.type === "identifier") {
-      func = this.resolveIdentifier(node.callee);
-      /*console.log('Calling identifier function:', {
-        identifier: node.callee.name,
-        function: func
-      });*/
+      func = await this.resolveIdentifier(node.callee);
     } else {
-      func = this.evaluateNode(node.callee);
-      /*console.log('Calling evaluated function:', {
-        evaluatedFunction: func
-      });*/
+      func = await this.evaluateNode(node.callee);
     }
   
     if (typeof func !== "function") {
@@ -657,14 +646,12 @@ class VerseScript {
       throw new Error(`${node.callee.name || "Expression"} is not a function`);
     }
   
-    const args = node.arguments.map(arg => this.evaluateNode(arg));
-    //console.log('Function arguments:', args);
-  
+    const args = await Promise.all(node.arguments.map(arg => this.evaluateNode(arg)));
+    
     const previousThis = this.currentThis;
     this.currentThis = thisArg;
     try {
-      const result = func.apply(thisArg, args);
-      //console.log('Function call result:', result);
+      const result = await func.apply(thisArg, args);
       return result;
     } catch (error) {
       console.error('Error during function call:', error);
@@ -693,17 +680,16 @@ class VerseScript {
     throw new Error(`Undefined variable: ${node.name}`);
   }
 
-  evaluateMemberExpression(node) {
+  async evaluateMemberExpression(node) {
     let obj;
     if (node.object.type === "self") {
       obj = this.currentThis;
     } else {
-      obj = this.evaluateNode(node.object);
+      obj = await this.evaluateNode(node.object);
     }
     
-    const prop = node.computed ? this.evaluateNode(node.property) : node.property.name;
+    const prop = node.computed ? await this.evaluateNode(node.property) : node.property.name;
     
-    // Check if we're accessing a class member
     if (obj && typeof obj === 'object') {
       const className = obj.constructor ? obj.constructor.name : null;
       const classInfo = className ? this.classes[className] : null;
@@ -723,8 +709,10 @@ class VerseScript {
       throw new Error(`Cannot access private member '${prop}'`);
     }
     
-    return obj[prop];
+    const result = obj[prop];
+    return result;
   }
+
 
 
   evaluateAssignment(node) {
@@ -743,45 +731,31 @@ class VerseScript {
     return value;
   }
 
-  evaluateBlock(block) {
-    //const previousScope = this.currentScope;
-    //this.currentScope = Object.create(this.currentScope);
-    try {
-      for (const statement of block) {
-        this.evaluateNode(statement);
-      }
-    } finally {
-      //this.currentScope = previousScope;
+  async evaluateBlock(block) {
+    for (const statement of block) {
+      await this.evaluateNode(statement);
     }
   }
 
-  evaluateForLoop(node) {
-    //const previousScope = this.currentScope;
-    //this.currentScope = Object.create(this.currentScope);
-
+  async evaluateForLoop(node) {
     try {
-      // Initialize
       if (node.init) {
-        this.evaluateNode(node.init);
+        await this.evaluateNode(node.init);
       }
 
-      // Test and loop
       while (true) {
-        // Check the test condition if it exists
-        if (node.test && !this.evaluateNode(node.test)) {
+        if (node.test && !(await this.evaluateNode(node.test))) {
           break;
         }
 
-        // Execute the loop body
-        this.evaluateBlock(node.body);
+        await this.evaluateBlock(node.body);
 
-        // Perform the update
         if (node.update) {
-          this.evaluateNode(node.update);
+          await this.evaluateNode(node.update);
         }
       }
     } finally {
-      //this.currentScope = previousScope;
+      // Cleanup if needed
     }
   }
 
