@@ -11,7 +11,18 @@ class VerseScript {
       memoize: this.createMemoizeDecorator()
     };
     this.jsFunctions = {
-      print: (msg) => console.log(msg),
+      print: (msg) => {
+        // Better handling of different types for print
+        let output = msg;
+        if (typeof msg === 'object' && msg !== null) {
+          try {
+            output = JSON.stringify(msg, null, 2);
+          } catch (e) {
+            output = String(msg);
+          }
+        }
+        console.log(output);
+      },
       add: (a, b) => a + b,
       toJson: (obj) => {
         const replacer = (key, value) => {
@@ -43,6 +54,45 @@ class VerseScript {
     this.currentModule = null;
     this.moduleQueue = [];
     this.baseUrl = baseUrl;
+  }
+
+  formatError(error, location = null) {
+    let errorMessage = "";
+    
+    // Handle different types of errors
+    if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === 'object' && error !== null) {
+      try {
+        errorMessage = JSON.stringify(error);
+      } catch (e) {
+        errorMessage = error.toString();
+      }
+    } else {
+      errorMessage = String(error);
+    }
+    
+    // Add location information if available
+    if (location) {
+      const filename = this.currentModule ? this.currentModule.filename : 'unknown';
+      errorMessage += `\nAt ${filename}:${location.start.line}:${location.start.column}`;
+    }
+    
+    return errorMessage;
+  }
+
+  logError(error, context = "", location = null) {
+    const formattedError = this.formatError(error, location);
+    console.error(`${context}${context ? ": " : ""}${formattedError}`);
+    
+    // Also log the raw error object for debugging
+    if (typeof error === 'object' && error !== null) {
+      console.error("Raw error object:", error);
+    }
+    
+    return formattedError;
   }
 
   addJsFunction(name, func) {
@@ -104,8 +154,6 @@ class VerseScript {
     };
   }
 
-
-
   addJsClass(name, jsClass) {
     if (
       typeof jsClass !== "function" ||
@@ -158,6 +206,7 @@ class VerseScript {
     const module = {
       exports: {},
       filename,
+      content, // Store content for error reporting
       loaded: false,
     };
 
@@ -175,10 +224,12 @@ class VerseScript {
         const line = lines[error.location.start.line - 1];
         const pointer = " ".repeat(error.location.start.column - 1) + "^";
 
-        throw new Error(
-          `${error.message}\nAt ${filename}:${error.location.start.line}:${error.location.start.column}\n${line}\n${pointer}`,
-        );
+        const enhancedMessage = `${error.message}\nAt ${filename}:${error.location.start.line}:${error.location.start.column}\n${line}\n${pointer}`;
+        console.error("Parse Error:", enhancedMessage);
+        
+        throw new Error(enhancedMessage);
       } else {
+        console.error("Interpreter Error:", this.formatError(error));
         throw error;
       }
     }
@@ -197,8 +248,8 @@ class VerseScript {
     return await response.text();
   }
 
-  evaluateImport(node) {
-    const sourceModule = this.loadModuleFile(node.source.value);
+  async evaluateImport(node) {
+    const sourceModule = await this.loadModuleFile(node.source.value);
     for (const specifier of node.specifiers) {
       if (!(specifier.name.name in sourceModule.exports)) {
         throw new Error(
@@ -210,9 +261,9 @@ class VerseScript {
     }
   }
 
-  evaluateExport(node) {
+  async evaluateExport(node) {
     if (node.declaration) {
-      this.evaluateNode(node.declaration);
+      await this.evaluateNode(node.declaration);
       if (node.declaration.type === "variableDeclaration") {
         this.currentModule.exports[node.declaration.id.name] =
           this.currentScope[node.declaration.id.name];
@@ -246,7 +297,7 @@ class VerseScript {
     try {
       switch (node.type) {
         case "classDefinition":
-          this.defineClass(node);
+          await this.defineClass(node);
           break;
         case "variableDeclaration":
           const value = node.init ? await this.evaluateNode(node.init) : undefined;
@@ -277,11 +328,34 @@ class VerseScript {
           };
           this.currentScope[node.name.name] = func;
           break;
+        case "functionExpression":
+          return async (...args) => {
+            const previousScope = this.currentScope;
+            this.currentScope = Object.create(this.currentScope);
+            node.params.forEach((param, index) => {
+              this.currentScope[param.name] = args[index];
+            });
+            try {
+              const result = await this.evaluateBlock(node.body);
+              return result;
+            } catch (e) {
+              if (e.type === "return") {
+                return e.value;
+              }
+              throw e;
+            } finally {
+              this.currentScope = previousScope;
+            }
+          };
         case "ifStatement":
           if (await this.evaluateNode(node.test)) {
             await this.evaluateBlock(node.consequent);
           } else if (node.alternate) {
-            await this.evaluateBlock(node.alternate);
+            if (Array.isArray(node.alternate)) {
+              await this.evaluateBlock(node.alternate);
+            } else {
+              await this.evaluateNode(node.alternate);
+            }
           }
           break;
         case "tryCatchStatement":
@@ -290,7 +364,14 @@ class VerseScript {
           } catch (error) {
             const previousScope = this.currentScope;
             this.currentScope = Object.create(this.currentScope);
-            this.currentScope[node.errorParam.name] = error;
+            
+            // Format the caught error for VerseScript
+            let formattedError = error;
+            if (typeof error === 'object' && error !== null && !error.type) {
+              formattedError = this.formatError(error);
+            }
+            
+            this.currentScope[node.errorParam.name] = formattedError;
             try {
               await this.evaluateBlock(node.catchBlock);
             } finally {
@@ -309,6 +390,11 @@ class VerseScript {
         case "returnStatement":
           this.returnValue = node.value ? await this.evaluateNode(node.value) : undefined;
           throw { type: "return", value: this.returnValue };
+        case "throwStatement":
+          const throwValue = await this.evaluateNode(node.value);
+          const formattedThrowError = this.formatError(throwValue, node.loc);
+          this.logError(throwValue, "Thrown error", node.loc);
+          throw throwValue;
         case "assignment":
           return await this.evaluateAssignment(node);
         case "objectCreation":
@@ -338,14 +424,16 @@ class VerseScript {
         case "logicalAnd":
           return await this.evaluateNode(node.left) && await this.evaluateNode(node.right);
         case "equality":
-          return this.evaluateEquality(node);
+          return await this.evaluateEquality(node);
         case "comparison":
-          return this.evaluateComparison(node);
+          return await this.evaluateComparison(node);
         case "addition":
         case "multiplication":
-          return this.evaluateBinaryOperation(node);
+          return await this.evaluateBinaryOperation(node);
         case "unary":
-          return this.evaluateUnaryOperation(node);
+          return await this.evaluateUnaryOperation(node);
+        case "updateExpression":
+          return await this.evaluateUpdateExpression(node);
         case "macroDefinition":
           this.defineMacro(node);
           break;
@@ -356,190 +444,225 @@ class VerseScript {
           await this.evaluateExport(node);
           break;
         case "arrayLiteral":
-          return Promise.all(node.elements.map(element => this.evaluateNode(element)));
+          return await Promise.all(node.elements.map(element => this.evaluateNode(element)));
+        case "objectLiteral":
+          const obj = {};
+          for (const property of node.properties) {
+            const value = await this.evaluateNode(property.value);
+            obj[property.key] = value;
+          }
+          return obj;
         case "expressionStatement":
           return await this.evaluateNode(node.expression);
         default:
           throw new Error(`Unknown node type: ${node.type}`);
       }
     } catch (error) {
-      if (node.loc) {
-        error.message = `${error.message}\nAt ${this.currentModule.filename}:${node.loc.start.line}:${node.loc.start.column}`;
+      if (error.type === "return") {
+        throw error; // Re-throw return statements without modification
       }
-      throw error;
-    }
-  }
-
-  defineClass(node) {
-  // Initialize classInfo with default values
-  let classInfo = {
-    methods: {},
-    properties: {},
-    constructor: (instance, args) => {},
-    parentClass: null
-  };
-
-  // Handle class inheritance
-  if (node.superClass) {
-    classInfo.parentClass = this.classes[node.superClass.name];
-    if (!classInfo.parentClass) {
-      throw new Error(`Superclass ${node.superClass.name} is not defined`);
-    }
-  }
-
-  // Apply class decorators if present
-  if (node.decorators && node.decorators.length > 0) {
-    for (const decorator of node.decorators) {
-      const decoratorFn = this.decorators[decorator.name.name];
-      if (!decoratorFn) {
-        throw new Error(`Unknown decorator: @${decorator.name.name}`);
-      }
-      if (decoratorFn.class) {
-        classInfo = decoratorFn.class(classInfo);
-      }
-    }
-  }
-
-  // Process class members (methods and properties)
-  for (const member of node.members) {
-    const isPrivate = member.name.name.startsWith('_');
-
-    if (member.type === "methodDefinition") {
-      // Create basic method descriptor
-      let descriptor = {
-        value: this.createMethod(member, node.name.name).bind(this),
-        writable: true,
-        enumerable: true,
-        configurable: true
-      };
-
-      // Apply method decorators if present
-      if (member.decorators && member.decorators.length > 0) {
-        for (const decorator of member.decorators) {
-          const decoratorFn = this.decorators[decorator.name.name];
-          if (!decoratorFn) {
-            throw new Error(`Unknown decorator: @${decorator.name.name}`);
-          }
-          if (decoratorFn.method) {
-            descriptor = decoratorFn.method(classInfo, member.name.name, descriptor);
+      
+      // Enhanced error handling with location information
+      const filename = this.currentModule ? this.currentModule.filename : 'unknown';
+      let errorMessage = this.formatError(error);
+      
+      if (node.loc && !errorMessage.includes("At ")) {
+        errorMessage += `\nAt ${filename}:${node.loc.start.line}:${node.loc.start.column}`;
+        
+        // Try to get the actual line of code for better context
+        if (this.currentModule && this.currentModule.content) {
+          const lines = this.currentModule.content.split('\n');
+          const errorLine = lines[node.loc.start.line - 1];
+          if (errorLine) {
+            const pointer = " ".repeat(node.loc.start.column - 1) + "^";
+            errorMessage += `\n${errorLine}\n${pointer}`;
           }
         }
       }
-
-      // Store the method with its privacy flag
-      classInfo.methods[member.name.name] = {
-        method: descriptor.value,
-        isPrivate
-      };
-    } else if (member.type === "propertyDefinition") {
-      // Handle property definitions
-      const value = member.value !== null ? this.evaluateNode(member.value) : undefined;
-      classInfo.properties[member.name.name] = {
-        value,
-        isPrivate
-      };
-    }
-  }
-
-  // Handle constructor if defined
-  if (node.constructor) {
-    classInfo.constructor = this.createConstructor(node.constructor, node.name.name).bind(this);
-  }
-
-  // Store the class definition
-  this.classes[node.name.name] = classInfo;
-
-  // Create the constructor function for creating instances
-  const classConstructor = (...args) => {
-    const instance = Object.create(null);
-
-    // Add constructor reference
-    instance.constructor = { name: node.name.name };
-
-    // Build prototype chain and add members
-    let currentClass = this.classes[node.name.name];
-    while (currentClass) {
-      // Add methods from current class
-      Object.entries(currentClass.methods).forEach(([name, methodInfo]) => {
-        if (!methodInfo.isPrivate || this.currentThis === instance) {
-          instance[name] = (...args) => methodInfo.method(instance, ...args);
-        }
-      });
-
-      // Add properties from current class
-      Object.entries(currentClass.properties).forEach(([name, propertyInfo]) => {
-        if (!propertyInfo.isPrivate || this.currentThis === instance) {
-          Object.defineProperty(instance, name, {
-            value: propertyInfo.value,
-            writable: true,
-            enumerable: true,
-            configurable: true
-          });
-        }
-      });
-
-      // Move up the inheritance chain
-      currentClass = currentClass.parentClass;
-    }
-
-    // Call the constructor
-    const result = classInfo.constructor(instance, args);
-    
-    // Ensure instance properties are properly set
-    if (result !== undefined) {
-      Object.assign(instance, result);
-    }
-
-    return instance;
-  };
-
-  // Store constructor in global scope
-  this.globalScope[node.name.name] = classConstructor;
-}
-
-createMethod(node, className) {
-  return async (instance, ...args) => {
-    const previousScope = this.currentScope;
-    const previousThis = this.currentThis;
-    this.currentScope = Object.create(this.globalScope);
-    this.currentThis = instance;
-
-    this.currentScope.self = instance;
-
-    const classInfo = this.classes[className];
-    if (classInfo && classInfo.parentClass) {
-      this.currentScope.super = {};
-      Object.entries(classInfo.parentClass.methods).forEach(([methodName, methodInfo]) => {
-        if (!methodInfo.isPrivate) {
-          this.currentScope.super[methodName] = async (...args) => {
-            return await methodInfo.method(instance, ...args);
-          };
-        }
-      });
-    }
-
-    node.params.forEach((param, index) => {
-      this.currentScope[param.name] = args[index];
-    });
-    
-    try {
-      const result = await this.evaluateBlock(node.body);
-      return result;
-    } catch (e) {
-      if (e.type === "return") {
-        return e.value;
+      
+      // Log the error with context
+      console.error(`Runtime Error: ${errorMessage}`);
+      if (typeof error === 'object' && error !== null) {
+        console.error("Error details:", error);
       }
-      throw e;
-    } finally {
-      this.currentScope = previousScope;
-      this.currentThis = previousThis;
+      
+      // Create a new error with enhanced message
+      const enhancedError = new Error(errorMessage);
+      enhancedError.originalError = error;
+      enhancedError.location = node.loc;
+      throw enhancedError;
     }
-  };
-}
+  }
 
+  async defineClass(node) {
+    // Initialize classInfo with default values
+    let classInfo = {
+      methods: {},
+      properties: {},
+      constructor: (instance, args) => {},
+      parentClass: null
+    };
+
+    // Handle class inheritance
+    if (node.superClass) {
+      classInfo.parentClass = this.classes[node.superClass.name];
+      if (!classInfo.parentClass) {
+        throw new Error(`Superclass ${node.superClass.name} is not defined`);
+      }
+    }
+
+    // Apply class decorators if present
+    if (node.decorators && node.decorators.length > 0) {
+      for (const decorator of node.decorators) {
+        const decoratorFn = this.decorators[decorator.name.name];
+        if (!decoratorFn) {
+          throw new Error(`Unknown decorator: @${decorator.name.name}`);
+        }
+        if (decoratorFn.class) {
+          classInfo = decoratorFn.class(classInfo);
+        }
+      }
+    }
+
+    // Process class members (methods and properties)
+    for (const member of node.members) {
+      const isPrivate = member.name.name.startsWith('_');
+
+      if (member.type === "methodDefinition") {
+        // Create basic method descriptor
+        let descriptor = {
+          value: this.createMethod(member, node.name.name).bind(this),
+          writable: true,
+          enumerable: true,
+          configurable: true
+        };
+
+        // Apply method decorators if present
+        if (member.decorators && member.decorators.length > 0) {
+          for (const decorator of member.decorators) {
+            const decoratorFn = this.decorators[decorator.name.name];
+            if (!decoratorFn) {
+              throw new Error(`Unknown decorator: @${decorator.name.name}`);
+            }
+            if (decoratorFn.method) {
+              descriptor = decoratorFn.method(classInfo, member.name.name, descriptor);
+            }
+          }
+        }
+
+        // Store the method with its privacy flag
+        classInfo.methods[member.name.name] = {
+          method: descriptor.value,
+          isPrivate
+        };
+      } else if (member.type === "propertyDefinition") {
+        // Handle property definitions
+        const value = member.value !== null ? await this.evaluateNode(member.value) : undefined;
+        classInfo.properties[member.name.name] = {
+          value,
+          isPrivate
+        };
+      }
+    }
+
+    // Handle constructor if defined
+    if (node.constructor) {
+      classInfo.constructor = this.createConstructor(node.constructor, node.name.name).bind(this);
+    }
+
+    // Store the class definition
+    this.classes[node.name.name] = classInfo;
+
+    // Create the constructor function for creating instances
+    const classConstructor = async (...args) => {
+      const instance = Object.create(null);
+
+      // Add constructor reference
+      instance.constructor = { name: node.name.name };
+
+      // Build prototype chain and add members
+      let currentClass = this.classes[node.name.name];
+      while (currentClass) {
+        // Add methods from current class
+        Object.entries(currentClass.methods).forEach(([name, methodInfo]) => {
+          if (!methodInfo.isPrivate || this.currentThis === instance) {
+            instance[name] = (...args) => methodInfo.method(instance, ...args);
+          }
+        });
+
+        // Add properties from current class
+        Object.entries(currentClass.properties).forEach(([name, propertyInfo]) => {
+          if (!propertyInfo.isPrivate || this.currentThis === instance) {
+            Object.defineProperty(instance, name, {
+              value: propertyInfo.value,
+              writable: true,
+              enumerable: true,
+              configurable: true
+            });
+          }
+        });
+
+        // Move up the inheritance chain
+        currentClass = currentClass.parentClass;
+      }
+
+      // Call the constructor
+      const result = await classInfo.constructor(instance, args);
+      
+      // Ensure instance properties are properly set
+      if (result !== undefined) {
+        Object.assign(instance, result);
+      }
+
+      return instance;
+    };
+
+    // Store constructor in global scope
+    this.globalScope[node.name.name] = classConstructor;
+  }
+
+  createMethod(node, className) {
+    return async (instance, ...args) => {
+      const previousScope = this.currentScope;
+      const previousThis = this.currentThis;
+      this.currentScope = Object.create(this.globalScope);
+      this.currentThis = instance;
+
+      this.currentScope.self = instance;
+
+      const classInfo = this.classes[className];
+      if (classInfo && classInfo.parentClass) {
+        this.currentScope.super = {};
+        Object.entries(classInfo.parentClass.methods).forEach(([methodName, methodInfo]) => {
+          if (!methodInfo.isPrivate) {
+            this.currentScope.super[methodName] = async (...args) => {
+              return await methodInfo.method(instance, ...args);
+            };
+          }
+        });
+      }
+
+      node.params.forEach((param, index) => {
+        this.currentScope[param.name] = args[index];
+      });
+      
+      try {
+        const result = await this.evaluateBlock(node.body);
+        return result;
+      } catch (e) {
+        if (e.type === "return") {
+          return e.value;
+        }
+        throw e;
+      } finally {
+        this.currentScope = previousScope;
+        this.currentThis = previousThis;
+      }
+    };
+  }
 
   createConstructor(node, className) {
-    return (instance, args) => {
+    return async (instance, args) => {
       const previousScope = this.currentScope;
       const previousThis = this.currentThis;
       this.currentScope = Object.create(this.globalScope);
@@ -560,7 +683,7 @@ createMethod(node, className) {
         this.currentScope[param.name] = args[index];
       });
       try {
-        const result = this.evaluateBlock(node.body);
+        const result = await this.evaluateBlock(node.body);
         // Ensure that the instance properties are set
         Object.assign(instance, this.currentScope.self);
         return result;
@@ -571,7 +694,7 @@ createMethod(node, className) {
     };
   }
 
-  createObject(node) {
+  async createObject(node) {
     if (this.classes[node.className.name]) {
       const classInfo = this.classes[node.className.name];
       const instance = Object.create(null);
@@ -602,17 +725,22 @@ createMethod(node, className) {
       });
   
       // Call only the constructor of the instantiated class
-      const args = node.arguments.map((arg) => this.evaluateNode(arg));
-      classInfo.constructor(instance, args);
+      const args = await Promise.all(node.arguments.map((arg) => this.evaluateNode(arg)));
+      await classInfo.constructor(instance, args);
   
       return instance;
     } else if (this.jsClasses[node.className.name]) {
       const JsClass = this.jsClasses[node.className.name];
-      const instance = new JsClass(
-        ...node.arguments.map((arg) => this.evaluateNode(arg)),
-      );
+      const args = await Promise.all(node.arguments.map((arg) => this.evaluateNode(arg)));
+      const instance = new JsClass(...args);
       return instance;
     } else {
+      // Use the stored constructor function instead
+      if (this.globalScope[node.className.name]) {
+        const Constructor = this.globalScope[node.className.name];
+        const args = await Promise.all(node.arguments.map((arg) => this.evaluateNode(arg)));
+        return await Constructor(...args);
+      }
       console.error("Class not found:", node.className.name);
       throw new Error(`Unknown class: ${node.className.name}`);
     }
@@ -622,42 +750,54 @@ createMethod(node, className) {
     let func;
     let thisArg = null;
   
-    if (node.callee.type === "memberExpression") {
-      const obj = await this.evaluateNode(node.callee.object);
-      const prop = node.callee.property.name;
-      try {
-        func = await this.evaluateMemberExpression(node.callee);
-      } catch (error) {
-        console.error('Error accessing method:', error.message);
+    try {
+      if (node.callee.type === "memberExpression") {
+        const obj = await this.evaluateNode(node.callee.object);
+        const prop = node.callee.property.name;
+        try {
+          func = await this.evaluateMemberExpression(node.callee);
+        } catch (error) {
+          const errorMsg = `Error accessing method '${prop}': ${this.formatError(error)}`;
+          this.logError(error, "Method access error", node.loc);
+          throw new Error(errorMsg);
+        }
+        thisArg = obj;
+      } else if (node.callee.type === "identifier") {
+        func = this.resolveIdentifier(node.callee);
+      } else {
+        func = await this.evaluateNode(node.callee);
+      }
+  
+      if (typeof func !== "function") {
+        const calleeName = node.callee.name || node.callee.type || "Expression";
+        const error = new Error(`'${calleeName}' is not a function (got ${typeof func})`);
+        this.logError(error, "Function call error", node.loc);
         throw error;
       }
-      thisArg = obj;
-    } else if (node.callee.type === "identifier") {
-      func = await this.resolveIdentifier(node.callee);
-    } else {
-      func = await this.evaluateNode(node.callee);
-    }
   
-    if (typeof func !== "function") {
-      console.error('Attempted to call non-function:', {
-        callee: node.callee,
-        evaluatedFunction: func
-      });
-      throw new Error(`${node.callee.name || "Expression"} is not a function`);
-    }
-  
-    const args = await Promise.all(node.arguments.map(arg => this.evaluateNode(arg)));
-    
-    const previousThis = this.currentThis;
-    this.currentThis = thisArg;
-    try {
-      const result = await func.apply(thisArg, args);
-      return result;
+      const args = await Promise.all(node.arguments.map(arg => this.evaluateNode(arg)));
+      
+      const previousThis = this.currentThis;
+      this.currentThis = thisArg;
+      try {
+        const result = await func.apply(thisArg, args);
+        return result;
+      } catch (error) {
+        const calleeName = node.callee.name || "anonymous function";
+        const formattedError = `Error in function '${calleeName}': ${this.formatError(error)}`;
+        this.logError(error, `Function execution error (${calleeName})`, node.loc);
+        throw new Error(formattedError);
+      } finally {
+        this.currentThis = previousThis;
+      }
     } catch (error) {
-      console.error('Error during function call:', error);
+      // Re-throw with additional context if not already enhanced
+      if (!error.message.includes("Function call error") && !error.message.includes("Function execution error")) {
+        const enhancedError = new Error(`Function call failed: ${this.formatError(error)}`);
+        this.logError(error, "Function call failure", node.loc);
+        throw enhancedError;
+      }
       throw error;
-    } finally {
-      this.currentThis = previousThis;
     }
   }
 
@@ -705,7 +845,7 @@ createMethod(node, className) {
       }
     }
     
-    if (prop.startsWith('_') && this.currentThis !== obj) {
+    if (prop.startsWith && prop.startsWith('_') && this.currentThis !== obj) {
       throw new Error(`Cannot access private member '${prop}'`);
     }
     
@@ -713,16 +853,14 @@ createMethod(node, className) {
     return result;
   }
 
-
-
-  evaluateAssignment(node) {
-    const value = this.evaluateNode(node.right);
+  async evaluateAssignment(node) {
+    const value = await this.evaluateNode(node.right);
     if (node.left.type === "identifier") {
       this.currentScope[node.left.name] = value;
     } else if (node.left.type === "memberExpression") {
-      const obj = this.evaluateNode(node.left.object);
+      const obj = await this.evaluateNode(node.left.object);
       if (node.left.computed) {
-        const prop = this.evaluateNode(node.left.property);
+        const prop = await this.evaluateNode(node.left.property);
         obj[prop] = value;
       } else {
         obj[node.left.property.name] = value;
@@ -760,14 +898,14 @@ createMethod(node, className) {
   }
 
   createFunction(node) {
-    return (...args) => {
+    return async (...args) => {
       const previousScope = this.currentScope;
       this.currentScope = Object.create(this.currentScope);
       node.params.forEach((param, index) => {
         this.currentScope[param.name] = args[index];
       });
       try {
-        this.evaluateBlock(node.body);
+        await this.evaluateBlock(node.body);
       } catch (e) {
         if (e.type === "return") {
           return e.value;
@@ -780,9 +918,9 @@ createMethod(node, className) {
     };
   }
 
-  evaluateEquality(node) {
-    const left = this.evaluateNode(node.left);
-    const right = this.evaluateNode(node.right);
+  async evaluateEquality(node) {
+    const left = await this.evaluateNode(node.left);
+    const right = await this.evaluateNode(node.right);
     switch (node.operator) {
       case "==":
         return left == right;
@@ -791,25 +929,9 @@ createMethod(node, className) {
     }
   }
 
-  /*expandMacro(node) {
-    const macro = this.macros[node.name.name];
-    if (!macro) {
-      throw new Error(`Unknown macro: ${node.name.name}`);
-    }
-  
-    let expandedBody = macro.body;
-    macro.params.forEach((param, index) => {
-      const argValue = this.evaluateNode(node.arguments[index]);
-      const regex = new RegExp(`\\b${param.name}\\b`, "g");
-      expandedBody = expandedBody.replace(regex, JSON.stringify(argValue));
-    });
-  
-    return this.evaluateNode(parser.parse(expandedBody)[0]);
-  }*/
-
-  evaluateComparison(node) {
-    const left = this.evaluateNode(node.left);
-    const right = this.evaluateNode(node.right);
+  async evaluateComparison(node) {
+    const left = await this.evaluateNode(node.left);
+    const right = await this.evaluateNode(node.right);
     switch (node.operator) {
       case "<":
         return left < right;
@@ -822,9 +944,9 @@ createMethod(node, className) {
     }
   }
 
-  evaluateBinaryOperation(node) {
-    const left = this.evaluateNode(node.left);
-    const right = this.evaluateNode(node.right);
+  async evaluateBinaryOperation(node) {
+    const left = await this.evaluateNode(node.left);
+    const right = await this.evaluateNode(node.right);
     switch (node.operator) {
       case "+":
         return left + right;
@@ -839,8 +961,8 @@ createMethod(node, className) {
     }
   }
 
-  evaluateUnaryOperation(node) {
-    const operand = this.evaluateNode(node.right);
+  async evaluateUnaryOperation(node) {
+    const operand = await this.evaluateNode(node.right);
     switch (node.operator) {
       case "-":
         return -operand;
@@ -851,6 +973,44 @@ createMethod(node, className) {
     }
   }
 
+  async evaluateUpdateExpression(node) {
+    if (node.argument.type === "identifier") {
+      const currentValue = this.resolveIdentifier(node.argument);
+      let newValue;
+      
+      if (node.operator === "++") {
+        newValue = currentValue + 1;
+      } else if (node.operator === "--") {
+        newValue = currentValue - 1;
+      }
+      
+      // Update the variable
+      this.currentScope[node.argument.name] = newValue;
+      
+      // Return the appropriate value based on prefix/postfix
+      return node.prefix ? newValue : currentValue;
+    } else if (node.argument.type === "memberExpression") {
+      const obj = await this.evaluateNode(node.argument.object);
+      const prop = node.argument.computed ? await this.evaluateNode(node.argument.property) : node.argument.property.name;
+      const currentValue = obj[prop];
+      let newValue;
+      
+      if (node.operator === "++") {
+        newValue = currentValue + 1;
+      } else if (node.operator === "--") {
+        newValue = currentValue - 1;
+      }
+      
+      // Update the property
+      obj[prop] = newValue;
+      
+      // Return the appropriate value based on prefix/postfix
+      return node.prefix ? newValue : currentValue;
+    } else {
+      throw new Error("Invalid left-hand side expression in assignment");
+    }
+  }
+
   defineMacro(node) {
     this.macros[node.name.name] = {
       params: node.params,
@@ -858,30 +1018,35 @@ createMethod(node, className) {
     };
   }
 
-  expandMacro(node) {
+  async expandMacro(node) {
     const macro = this.macros[node.name.name];
     if (!macro) {
-      throw new Error(`Unknown macro: ${node.name.name}`);
+      const error = new Error(`Unknown macro: ${node.name.name}`);
+      this.logError(error, "Macro expansion error", node.loc);
+      throw error;
     }
 
     let expandedBody = macro.body;
-    macro.params.forEach((param, index) => {
-      const argValue = this.evaluateNode(node.arguments[index]);
+    for (let i = 0; i < macro.params.length; i++) {
+      const param = macro.params[i];
+      const argValue = await this.evaluateNode(node.arguments[i]);
       const regex = new RegExp(`\\b${param.name}\\b`, "g");
       expandedBody = expandedBody.replace(regex, JSON.stringify(argValue));
-    });
-
+    }
 
     try {
       const expandedAst = parser.parse(expandedBody, {
         startRule: "expression",
       });
-      return this.evaluateNode(expandedAst);
+      return await this.evaluateNode(expandedAst);
     } catch (error) {
-      console.error(`Error parsing expanded macro: ${error}`);
-      throw error;
+      const formattedError = `Error parsing expanded macro '${node.name.name}': ${this.formatError(error)}`;
+      console.error(formattedError);
+      console.error("Expanded macro body:", expandedBody);
+      throw new Error(formattedError);
     }
   }
 }
+
 export default VerseScript;
 //module.exports = VerseScript;

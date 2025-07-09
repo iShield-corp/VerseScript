@@ -47,6 +47,7 @@ statement
   / forLoop
   / whileLoop
   / returnStatement
+  / throwStatement
   / functionDefinition
   / classDefinition
   / macroExpansionStatement
@@ -76,7 +77,7 @@ expressionStatement
     }
 
 expression
-  = _ expr:(assignment / logicalOr / comparison / macroExpansion) _ { return expr; }
+  = _ expr:(assignment / logicalOr / macroExpansion) _ { return expr; }
 
 assignment
   = left:leftHandSide _ "=" _ right:expression {
@@ -147,14 +148,18 @@ unary
   / callExpression
 
 callExpression
-  = head:primaryExpression tail:(_ ("(" _ argumentList _ ")" / "[" _ expression _ "]" / "." _ identifier))* {
+  = head:primaryExpression tail:(_ ("(" _ argumentList _ ")" / "[" _ expression _ "]" / "." _ identifier / "++" / "--"))* {
       return tail.reduce((result, element) => {
         if (element[1][0] === "(") {
           return locationInfo(location(), "FunctionCall", { type: "functionCall", callee: result, arguments: element[1][2] });
         } else if (element[1][0] === "[") {
           return locationInfo(location(), "MemberExpression", { type: "memberExpression", object: result, property: element[1][2], computed: true });
-        } else {
+        } else if (element[1][0] === ".") {
           return locationInfo(location(), "MemberExpression", { type: "memberExpression", object: result, property: element[1][2], computed: false });
+        } else if (element[1] === "++") {
+          return locationInfo(location(), "UpdateExpression", { type: "updateExpression", operator: "++", argument: result, prefix: false });
+        } else if (element[1] === "--") {
+          return locationInfo(location(), "UpdateExpression", { type: "updateExpression", operator: "--", argument: result, prefix: false });
         }
       }, head);
     }
@@ -188,6 +193,8 @@ primaryExpression
   = awaitExpression
   / literal
   / arrayLiteral
+  / objectLiteral
+  / functionExpression
   / objectCreation
   / macroExpansion
   / "self" { return locationInfo(location(), "Self", { type: "self" }); }
@@ -226,6 +233,25 @@ arrayElements
       return [head, ...tail.map(element => element[3])];
     }
 
+objectLiteral
+  = "{" _ properties:objectProperties? _ "}" {
+      return locationInfo(location(), "ObjectLiteral", { type: "objectLiteral", properties: properties || [] });
+    }
+
+objectProperties
+  = head:objectProperty tail:(_ "," _ objectProperty)* {
+      return [head, ...tail.map(element => element[3])];
+    }
+
+objectProperty
+  = key:(identifier / string) _ ":" _ value:expression {
+      return locationInfo(location(), "ObjectProperty", { 
+        type: "objectProperty", 
+        key: key.type === "identifier" ? key.name : key.value, 
+        value 
+      });
+    }
+
 identifier
   = !keyword name:[a-zA-Z_][a-zA-Z0-9_]* {
       return locationInfo(location(), "Identifier", { type: "identifier", name: text() });
@@ -233,7 +259,7 @@ identifier
 
 keyword
   = ("function" / "class" / "extends" / "constructor" / "var" / "let" / "const" 
-     / "if" / "else" / "for" / "while" / "return" / "true" / "false" / "null" 
+     / "if" / "else" / "for" / "while" / "return" / "throw" / "true" / "false" / "null" 
      / "new" / "macro" / "import" / "export" / "from" / "as" / "self" 
      / "async" / "await") !identifierPart
      
@@ -243,6 +269,7 @@ literal
   / boolean
   / char
   / arrayLiteral
+  / objectLiteral
   / nullLiteral
 
 number
@@ -330,8 +357,18 @@ forLoop
     }
 
 forInit
-  = variableDeclaration
+  = forVariableDeclaration
   / expression
+
+forVariableDeclaration
+  = kind:("var" / "let" / "const") __ id:identifier _ initialization:("=" _ expression)? {
+      return locationInfo(location(), "VariableDeclaration", { 
+        type: "variableDeclaration", 
+        kind, 
+        id, 
+        init: initialization ? initialization[2] : null 
+      });
+    }
 
 whileLoop
   = "while" _ "(" _ test:expression _ ")" _ body:block {
@@ -343,14 +380,30 @@ returnStatement
       return locationInfo(location(), "ReturnStatement", { type: "returnStatement", value });
     }
 
+throwStatement
+  = "throw" __ value:expression _ ";" _ {
+      return locationInfo(location(), "ThrowStatement", { type: "throwStatement", value });
+    }
+
 block
   = "{" _ statements:statement* _ "}" _ { return statements; }
 
 functionDefinition
-  = async:"async"? __ "function" __ name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
+  = async:("async" __)? "function" __ name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
       return locationInfo(location(), "FunctionDefinition", { 
         type: "functionDefinition", 
         name, 
+        params, 
+        body,
+        isAsync: !!async 
+      });
+    }
+
+functionExpression
+  = async:("async" __)? "function" _ name:identifier? _ "(" _ params:parameterList _ ")" _ body:block {
+      return locationInfo(location(), "FunctionExpression", { 
+        type: "functionExpression", 
+        name: name || null, 
         params, 
         body,
         isAsync: !!async 
@@ -382,7 +435,7 @@ constructorDefinition
 
 methodDefinition
   = decorators:decorator* _
-    async:"async"? __
+    async:("async" __)? 
     name:identifier _ "(" _ params:parameterList _ ")" _ body:block {
       return locationInfo(location(), "MethodDefinition", { 
         type: "methodDefinition", 
@@ -394,7 +447,7 @@ methodDefinition
       });
     }
 
-  awaitExpression
+awaitExpression
   = "await" __ expression:expression {
       return locationInfo(location(), "AwaitExpression", {
         type: "awaitExpression",
@@ -403,7 +456,7 @@ methodDefinition
     }
 
 propertyDefinition
-  = name:identifier _ initializer:("=" _ expression)? _ ";" _ {
+  = name:identifier _ !"(" initializer:("=" _ expression)? _ ";" _ {
       return locationInfo(location(), "PropertyDefinition", { 
         type: "propertyDefinition", 
         name, 
